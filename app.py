@@ -45,8 +45,11 @@ def enforce_rate_limit():
 
 # --- NLTK (Keep existing) ---
 @st.cache_resource
+try: nltk.data.find('token not) should persist
 def download_nltk_resources():
-    try: nltk.data.find('tokenizers/punkt')
+    resource_name = "punkt"
+    resource_izers/punkt'
+    
     except LookupError:
         st.info("Downloading NLTK 'punkt'..."); nltk.download('punkt', quiet=True)
 download_nltk_resources()
