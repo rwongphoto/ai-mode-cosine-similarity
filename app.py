@@ -50,22 +50,14 @@ if "gemini_api_key_to_persist" not in st.session_state:
 if "gemini_api_configured" not in st.session_state:
     st.session_state.gemini_api_configured = False
 
-# Attempt to reconfigure Gemini if a key is persisted in session state and genai isn't already configured
-# This handles script reruns where genai's global config might need to be re-established.
-if st.session_state.gemini_api_key_to_persist and not genai.API_KEY:
-    try:
-        genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
-        # Quick check if configuration seems to work
-        models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        if not models:
-             # This will likely be caught by the explicit "Set & Verify" but good to have a fallback
-            st.session_state.gemini_api_configured = False
-            # st.session_state.gemini_api_key_to_persist = "" # Don't clear yet, let user re-verify
-        else:
-            st.session_state.gemini_api_configured = True
-    except Exception:
-        st.session_state.gemini_api_configured = False
-        # st.session_state.gemini_api_key_to_persist = "" # Don't clear yet
+# --- Session State Initialization for API Key ---
+if "gemini_api_key_to_persist" not in st.session_state:
+    st.session_state.gemini_api_key_to_persist = ""
+if "gemini_api_configured" not in st.session_state:
+    st.session_state.gemini_api_configured = False
+
+# The genai.configure() call will happen when the user clicks "Set & Verify API Key".
+# Our st.session_state.gemini_api_configured flag will then reflect the status.
 
 
 # --- Sidebar API Key Configuration ---
