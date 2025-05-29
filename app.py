@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import google.generativeai as genai
 import re
-import nltk
+import nltk # Make sure nltk is imported
 import ast
 
 # --- Page Configuration ---
@@ -18,13 +18,22 @@ st.set_page_config(layout="wide", page_title="AI Query Fan-Out Analyzer")
 # --- NLTK Resource Download ---
 @st.cache_resource
 def download_nltk_resources():
+    resource_id = 'tokenizers/punkt'
     try:
-        nltk.data.find('tokenizers/punkt')
-    except nltk.downloader.DownloadError:
-        st.info("Downloading NLTK 'punkt' tokenizer resource...")
-        nltk.download('punkt', quiet=True)
-    except Exception as e:
-        st.warning(f"Could not prepare NLTK 'punkt': {e}")
+        # Check if the resource is already available
+        nltk.data.find(resource_id)
+        # st.sidebar.info(f"NLTK resource '{resource_id}' found.") # Optional: for debugging
+    except LookupError:
+        # If not found, download it
+        st.info(f"Downloading NLTK '{resource_id}' resource...")
+        try:
+            nltk.download('punkt', quiet=True)
+            st.sidebar.success(f"NLTK resource '{resource_id}' downloaded successfully.")
+        except Exception as e: # Catch any error during download itself
+            st.sidebar.error(f"Failed to download NLTK '{resource_id}': {e}")
+            st.warning(f"Could not download NLTK '{resource_id}'. Sentence tokenization might be impaired.")
+    except Exception as e: # Catch other unexpected errors
+        st.warning(f"An error occurred while checking for NLTK resource '{resource_id}': {e}")
 
 download_nltk_resources()
 
