@@ -43,15 +43,50 @@ def enforce_rate_limit():
     if elapsed < REQUEST_INTERVAL: time.sleep(REQUEST_INTERVAL - elapsed)
     last_request_time = time.time()
 
-# --- NLTK (Keep existing) ---
-@st.cache_resource
-try: nltk.data.find('token not) should persist
+# --- NLTK ---
+@st.cache_resource # Caching this function is good as NLTK download is a one-time setup per environment.
 def download_nltk_resources():
-    resource_name = "punkt"
-    resource_izers/punkt'
-    
+    """
+    Checks for the NLTK 'punkt' tokenizer resource and downloads it if not found.
+    Provides feedback to the user via Streamlit's sidebar.
+    """
+    resource_id = "punkt"  # The name of the NLTK resource to download
+    resource_path_for_find = f"tokenizers/{resource_id}" # How nltk.data.find() looks it up
+
+    try:
+        # Check if the resource is already available in any of NLTK's search paths
+        nltk.data.find(resource_path_for_find)
+        # If found, no need to do anything further.
+        # You could optionally add a success message for debugging if you like:
+        # st.sidebar.info(f"NLTK resource '{resource_id}' already available.")
     except LookupError:
-        st.info("Downloading NLTK 'punkt'..."); nltk.download('punkt', quiet=True)
+        # This exception means the resource was not found.
+        st.sidebar.info(f"NLTK resource '{resource_id}' not found. Attempting to download...")
+        try:
+            # Attempt to download the resource.
+            # quiet=True suppresses verbose NLTK download output in the console.
+            nltk.download(resource_id, quiet=True)
+            
+            # After attempting download, verify it's now findable.
+            # This will raise a LookupError if the download failed or didn't place it correctly.
+            nltk.data.find(resource_path_for_find) 
+            st.sidebar.success(f"NLTK resource '{resource_id}' downloaded successfully.")
+        except Exception as e_download:
+            # Catch any error during the download or the verification find()
+            st.sidebar.error(f"Failed to download or verify NLTK resource '{resource_id}'. Error: {e_download}")
+            st.sidebar.markdown(
+                "Please ensure your environment has internet access or that the NLTK 'punkt' "
+                "resource is pre-installed in one of the NLTK data paths (check server logs for details). "
+                "Sentence tokenization might be impaired."
+            )
+            # Depending on how critical 'punkt' is, you might consider st.stop() here.
+    except Exception as e_initial_find:
+        # Catch any other unexpected errors during the initial nltk.data.find() call
+        st.sidebar.warning(
+            f"An unexpected error occurred while checking for NLTK resource '{resource_id}': {e_initial_find}"
+        )
+
+# Call the function to ensure 'punkt' is available when the app starts.
 download_nltk_resources()
 
 # --- Models & Driver Setup (Keep existing) ---
