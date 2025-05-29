@@ -446,7 +446,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                         
                         if query_passage_pairs:
                             ce_scores = get_cross_encoder_scores(query_passage_pairs, cross_encoder_model)
-                            if ce_scores: # Check if scores were returned
+                            if ce_scores is not None and ce_scores.size > 0: # Check if scores were returned and the array is not empty
                                 max_s_cross = np.max(ce_scores)
                                 # Store all re-ranked scores for this query and URL if needed for detailed view
                                 local_processed_units_data[url]["reranked_scores"][query_text] = sorted(list(zip(rerank_units_text, ce_scores)), key=lambda x:x[1], reverse=True)
