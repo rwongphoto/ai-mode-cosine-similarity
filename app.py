@@ -228,7 +228,7 @@ def generate_synthetic_queries(user_query, num_queries=7):
             return []
     except Exception as e: st.error(f"Gemini API call error: {e}"); return []
 
-st.title("✨ AI Semantic Search Analyzer ✨")
+st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 
 st.sidebar.subheader("🤖 Embedding Model Configuration")
