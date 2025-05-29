@@ -189,7 +189,11 @@ def split_text_into_passages(text, sentences_per_passage=7, sentence_overlap=2):
 @st.cache_data
 def get_embeddings(_texts):
     if not _texts: return np.array([])
-    return embedding_model.encode(_texts)
+    # st.write(f"DEBUG: get_embeddings called with _texts: {_texts[:1] if _texts else 'Empty'}") # Optional: Check input to get_embeddings
+    embeddings = embedding_model.encode(_texts)
+    # st.write(f"DEBUG: get_embeddings produced shape: {embeddings.shape}") # Optional: Check output of get_embeddings
+    return embeddings
+
 
 # --- THIS IS THE CORRECT generate_synthetic_queries with FULL FAN-OUT PROMPT ---
 @st.cache_data(show_spinner="Generating synthetic queries with Gemini...")
@@ -198,7 +202,7 @@ def generate_synthetic_queries(user_query, num_queries=7):
         st.error("Gemini API not configured.")
         return []
 
-    model_name = "gemini-2.5-flash-preview-05-20" # Or your preferred model
+    model_name = "gemini-2.5-flash-preview-05-20" # Changed from 2.5 preview, as it may not be available for all users
     try:
         model = genai.GenerativeModel(model_name)
     except Exception as e:
@@ -307,6 +311,15 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
     st.subheader("🤖 Generated Synthetic Queries")
     st.expander("View Queries").json(synthetic_queries_list)
     synthetic_query_embeddings_arr = get_embeddings(synthetic_queries_list)
+    # --- DEBUG: Check synthetic query embeddings ---
+    # st.write("--- DEBUG: SYNTHETIC QUERY EMBEDDINGS ---")
+    # if synthetic_query_embeddings_arr is not None and synthetic_query_embeddings_arr.size > 0:
+    #     st.write(f"Shape: {synthetic_query_embeddings_arr.shape}")
+    #     st.write(f"First embedding (first 5 values): {synthetic_query_embeddings_arr[0, :5]}")
+    # else:
+    #     st.write("Synthetic query embeddings are None or empty.")
+    # --- END DEBUG ---
+
 
     all_url_metrics_list = []
     url_passage_data_dict = {}
@@ -351,6 +364,18 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
 
                 overall_url_emb_arr = np.mean(calc_passage_embs, axis=0).reshape(1, -1)
                 overall_sims_to_queries_arr = cosine_similarity(overall_url_emb_arr, synthetic_query_embeddings_arr)[0]
+                
+                # +++ START DEBUG BLOCK for overall similarity +++
+                st.write(f"--- DEBUG FOR URL: {current_url} (Loop Iteration: {i_url}) ---")
+                st.write(f"Number of passages processed: {len(current_passages_list)}")
+                if current_passages_list:
+                     st.write(f"Sample of first passage: '{current_passages_list[0][:100]}...'")
+                st.write(f"Shape of `passage_embeddings_arr` for this URL: {passage_embeddings_arr.shape}")
+                st.write(f"Mean of `passage_embeddings_arr` (Overall URL Embedding - first 5 values): {overall_url_emb_arr[0, :5]}")
+                st.write(f"`overall_sims_to_queries_arr` (scores against synthetic queries): {overall_sims_to_queries_arr}")
+                st.write(f"--- END DEBUG FOR URL: {current_url} ---")
+                # +++ END DEBUG BLOCK +++
+                
                 passage_sims_to_queries_arr = cosine_similarity(calc_passage_embs, synthetic_query_embeddings_arr)
                 url_passage_data_dict[current_url]["passage_similarities"] = passage_sims_to_queries_arr
 
@@ -419,4 +444,4 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
                             st.markdown(f"**Least Similar (P{idx_min_val+1} - Score: {sims_for_query_arr[idx_min_val]:.3f}):**"); st.caption(passages_list_val[idx_min_val])
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v1.7 (Fan-Out Prompt Restored)")
+st.sidebar.info("Query Fan-Out Analyzer | v1.7.1 (Debug Added)")
