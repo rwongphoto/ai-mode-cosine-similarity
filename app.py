@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import google.generativeai as genai
 import re
-# import nltk # NLTK REMOVED
+# import nltk # NLTK is removed
 import ast
 import time
 import random
@@ -26,18 +26,17 @@ st.set_page_config(layout="wide", page_title="AI Query Fan-Out Analyzer")
 # --- Session State Initialization ---
 if "all_url_metrics_list" not in st.session_state: st.session_state.all_url_metrics_list = None
 if "url_processed_units_dict" not in st.session_state: st.session_state.url_processed_units_dict = None
-if "synthetic_queries_list" not in st.session_state: st.session_state.synthetic_queries_list = None
+if "all_queries_for_analysis" not in st.session_state: st.session_state.all_queries_for_analysis = None # Will include initial + synthetic
 if "analysis_done" not in st.session_state: st.session_state.analysis_done = False
 if "gemini_api_key_to_persist" not in st.session_state: st.session_state.gemini_api_key_to_persist = ""
 if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_configured = False
 if "selenium_driver_instance" not in st.session_state: st.session_state.selenium_driver_instance = None
-# NLTK related session states are no longer needed
 
 
 # --- Web Fetching Enhancements ---
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
-USER_AGENTS = [
+USER_AGENTS = [ # Your full list
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
@@ -56,9 +55,6 @@ def enforce_rate_limit():
     now = time.time(); elapsed = now - last_request_time
     if elapsed < REQUEST_INTERVAL: time.sleep(REQUEST_INTERVAL - elapsed)
     last_request_time = time.time()
-
-# --- NLTK Setup REMOVED ---
-
 
 # --- Models & Driver Setup ---
 @st.cache_resource
@@ -98,7 +94,6 @@ if st.session_state.get("gemini_api_configured"):
         except Exception: st.session_state.gemini_api_configured = False
 else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 
-
 # --- Helper Functions ---
 def fetch_content_with_selenium(url, driver_instance):
     if not driver_instance: st.warning(f"Selenium N/A for {url}. Fallback."); return fetch_content_with_requests(url)
@@ -123,11 +118,8 @@ def parse_and_clean_html(html, url):
         return text_content.strip() if text_content.strip() else None
     except Exception as e: st.error(f"HTML parsing error ({url}): {e}"); return None
 
-# --- Text Unit Processing Functions (NLTK REMOVED) ---
 def split_text_into_sentences(text):
-    """Splits text into sentences using regex only."""
     if not text: return []
-    # Regex for sentence splitting (includes !, ?, .)
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
 
@@ -150,7 +142,7 @@ def get_ranked_sentences_for_display(page_text_content, query_text, top_n=5):
     sentences = split_text_into_sentences(page_text_content)
     if not sentences: return [], []
     sentence_embeddings = get_embeddings(sentences)
-    query_embedding = get_embeddings([query_text])[0]
+    query_embedding = get_embeddings([query_text])[0] # Note: [query_text] for single item
     if sentence_embeddings.size == 0 or query_embedding.size == 0: return [], []
     similarities = cosine_similarity(sentence_embeddings, query_embedding.reshape(1, -1)).flatten()
     sentence_scores = sorted(list(zip(sentences, similarities)), key=lambda item: item[1], reverse=True)
@@ -161,7 +153,7 @@ def get_highlighted_sentence_html(page_text_content, query_text):
     sentences = split_text_into_sentences(page_text_content)
     if not sentences: return "<p>No sentences to highlight.</p>"
     sentence_embeddings = get_embeddings(sentences)
-    query_embedding = get_embeddings([query_text])[0]
+    query_embedding = get_embeddings([query_text])[0] # Note: [query_text] for single item
     if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings for highlighting.</p>"
     similarities = cosine_similarity(sentence_embeddings, query_embedding.reshape(1, -1)).flatten()
     highlighted_html = ""
@@ -169,7 +161,7 @@ def get_highlighted_sentence_html(page_text_content, query_text):
     min_sim, max_sim = np.min(similarities), np.max(similarities)
     for sentence, sim in zip(sentences, similarities):
         norm_sim = (sim - min_sim) / (max_sim - min_sim) if max_sim > min_sim else 0.5 
-        color = "green" if norm_sim >= 0.65 else "red" if norm_sim < 0.35 else "black"
+        color = "green" if norm_sim >= 0.75 else "red" if norm_sim < 0.35 else "black"
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     return highlighted_html
 
@@ -252,7 +244,8 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
 
     st.session_state.all_url_metrics_list = []
     st.session_state.url_processed_units_dict = {}
-    st.session_state.synthetic_queries_list = []
+    # st.session_state.synthetic_queries_list = [] # This will be set by all_queries_for_analysis now
+    st.session_state.all_queries_for_analysis = []
     st.session_state.analysis_done = False
 
     current_selenium_driver = None
@@ -268,10 +261,20 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
     if analysis_granularity == "Passage-based (Groups of sentences)":
         actual_overlap = max(0, s_per_p_val - 1) if s_overlap_val >= s_per_p_val else s_overlap_val
     
-    local_syn_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
-    if not local_syn_queries: st.error("No synthetic queries generated."); st.stop()
+    # Generate synthetic queries
+    synthetic_queries_only = generate_synthetic_queries(initial_query_val, num_sq_val)
     
-    local_syn_query_embs = get_embeddings(local_syn_queries)
+    # --- Create the full list of queries for analysis (Initial + Synthetic) ---
+    local_all_queries = [f"Initial: {initial_query_val}"] # Label the initial query
+    if synthetic_queries_only:
+        local_all_queries.extend(synthetic_queries_only)
+    else: # If Gemini fails, at least analyze against the initial query
+        st.warning("Synthetic query generation failed or returned empty. Analyzing against initial query only.")
+    
+    if not local_all_queries: st.error("No queries available for analysis (initial or synthetic)."); st.stop()
+    
+    local_all_query_embs = get_embeddings(local_all_queries) # Embed all queries (initial + synthetic)
+
     local_all_metrics = []
     local_processed_units_data = {}
 
@@ -289,8 +292,8 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 st.warning(f"Insufficient text from {url}.")
                 if text: processed_units = [text]
                 else:
-                    for sq_idx, sq in enumerate(local_syn_queries):
-                        local_all_metrics.append({"URL":url,"Query":sq,"Overall Similarity":0.0,"Max Unit Sim.":0.0,"Avg. Unit Sim.":0.0,"Num Units":0})
+                    for sq_idx, query_text in enumerate(local_all_queries):
+                        local_all_metrics.append({"URL":url,"Query":query_text,"Overall Similarity":0.0,"Max Unit Sim.":0.0,"Avg. Unit Sim.":0.0,"Num Units":0})
                     continue 
             else:
                 if analysis_granularity == "Sentence-based (Individual sentences)":
@@ -306,33 +309,33 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
 
             if unit_embeddings.size > 0:
                 calc_unit_embs = unit_embeddings.reshape(1,-1) if unit_embeddings.ndim==1 else unit_embeddings
-                if local_syn_query_embs is None or local_syn_query_embs.size==0:
-                    st.error("Synthetic query embeddings missing."); continue
+                if local_all_query_embs is None or local_all_query_embs.size==0:
+                    st.error("Query embeddings missing."); continue
                 
                 overall_url_emb = np.mean(calc_unit_embs,axis=0).reshape(1,-1)
-                overall_sims = cosine_similarity(overall_url_emb, local_syn_query_embs)[0]
+                overall_sims = cosine_similarity(overall_url_emb, local_all_query_embs)[0]
                 
-                unit_q_sims = cosine_similarity(calc_unit_embs, local_syn_query_embs)
+                unit_q_sims = cosine_similarity(calc_unit_embs, local_all_query_embs)
                 local_processed_units_data[url]["unit_similarities"] = unit_q_sims
 
-                for sq_idx, sq in enumerate(local_syn_queries):
+                for sq_idx, query_text in enumerate(local_all_queries): # Iterate over all queries
                     current_q_unit_sims = unit_q_sims[:, sq_idx]
                     max_s = np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0
                     avg_s = np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0
                     local_all_metrics.append({
-                        "URL":url,"Query":sq,"Overall Similarity":overall_sims[sq_idx],
+                        "URL":url,"Query":query_text,"Overall Similarity":overall_sims[sq_idx],
                         "Max Unit Sim.":max_s,"Avg. Unit Sim.":avg_s,
                         "Num Units":len(processed_units)
                     })
             else:
                 st.warning(f"No text unit embeddings for {url}.")
-                for sq_idx, sq in enumerate(local_syn_queries):
-                    local_all_metrics.append({"URL":url,"Query":sq,"Overall Similarity":0.0,"Max Unit Sim.":0.0,"Avg. Unit Sim.":0.0,"Num Units":0})
+                for sq_idx, query_text in enumerate(local_all_queries):
+                    local_all_metrics.append({"URL":url,"Query":query_text,"Overall Similarity":0.0,"Max Unit Sim.":0.0,"Avg. Unit Sim.":0.0,"Num Units":0})
     
     if local_all_metrics:
         st.session_state.all_url_metrics_list = local_all_metrics
         st.session_state.url_processed_units_dict = local_processed_units_data
-        st.session_state.synthetic_queries_list = local_syn_queries
+        st.session_state.all_queries_for_analysis = local_all_queries # Store all queries
         st.session_state.analysis_done = True
         st.session_state.last_analysis_granularity = analysis_granularity
     else:
@@ -340,57 +343,72 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
 
 # --- Display Results ---
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
-    st.subheader("🤖 Generated Synthetic Queries")
-    st.expander("View Queries").json(st.session_state.synthetic_queries_list)
+    st.subheader("Analysed Queries (Initial + Synthetic)") # Updated title
+    # Display all queries including the initial one
+    if st.session_state.all_queries_for_analysis:
+        query_display_list = [q.replace("Initial: ", "(Initial Query) ") if q.startswith("Initial: ") else q for q in st.session_state.all_queries_for_analysis]
+        st.expander("View All Analysed Queries").json(query_display_list)
+
+
     unit_label = "Sentence" if st.session_state.get("last_analysis_granularity") == "Sentence-based (Individual sentences)" else "Passage"
     st.markdown("---"); st.subheader(f"📈 Overall Similarity & {unit_label} Metrics Summary")
     df_summary = pd.DataFrame(st.session_state.all_url_metrics_list)
     summary_cols = ['URL', 'Query', 'Overall Similarity', f'Max {unit_label} Sim.', f'Avg. {unit_label} Sim.', f'Num {unit_label}s']
     df_summary_display = df_summary.rename(columns={"Max Unit Sim.": f"Max {unit_label} Sim.", "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", "Num Units": f"Num {unit_label}s"})
     st.dataframe(df_summary_display[summary_cols].style.format({"Overall Similarity":"{:.3f}",f"Max {unit_label} Sim.":"{:.3f}",f"Avg. {unit_label} Sim.":"{:.3f}"}), use_container_width=True, height=(min(len(df_summary)*38+38,700)))
-    st.markdown("---"); st.subheader("📊 Visual: Overall URL vs. Synthetic Query Similarity")
+    
+    st.markdown("---"); st.subheader("📊 Visual: Overall URL vs. All Queries Similarity") # Updated title
     df_overall_bar = df_summary.drop_duplicates(subset=['URL','Query'])
-    fig_bar = px.bar(df_overall_bar,x="Query",y="Overall Similarity",color="URL",barmode="group", title="Overall Webpage Similarity to Synthetic Queries",height=max(600,100*num_sq_val))
+    fig_bar = px.bar(df_overall_bar,x="Query",y="Overall Similarity",color="URL",barmode="group", title="Overall Webpage Similarity to All Analysed Queries",height=max(600,100*num_sq_val))
     fig_bar.update_xaxes(tickangle=30,automargin=True,title_text=None)
     fig_bar.update_yaxes(range=[0,1]); fig_bar.update_layout(legend_title_text='Webpage URL')
     st.plotly_chart(fig_bar, use_container_width=True)
-    st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. Synthetic Queries")
-    if st.session_state.url_processed_units_dict and st.session_state.synthetic_queries_list:
+    
+    st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. All Queries") # Updated title
+    if st.session_state.url_processed_units_dict and st.session_state.all_queries_for_analysis:
         for url_idx, (url, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
             with st.expander(f"Heatmap & Details for: {url}", expanded=(url_idx==0)):
                 units, unit_sims = p_data["units"], p_data.get("unit_similarities")
                 page_full_text = p_data.get("page_text_for_highlight", "")
                 if unit_sims is None or unit_sims.size==0: st.write(f"No {unit_label.lower()} similarity data."); continue
-                hover = [[f"<b>{unit_label[0]}{i+1}</b> vs Q:'{st.session_state.synthetic_queries_list[j][:45]}...'<br>Sim:{unit_sims[i,j]:.3f}<hr>Txt:{units[i][:120]}..." for j in range(unit_sims.shape[1])] for i in range(unit_sims.shape[0])]
-                short_sq = [q[:50]+'...' if len(q)>50 else q for q in st.session_state.synthetic_queries_list]
+                
+                hover = [[f"<b>{unit_label[0]}{i+1}</b> vs Q:'{st.session_state.all_queries_for_analysis[j][:45]}...'<br>Sim:{unit_sims[i,j]:.3f}<hr>Txt:{units[i][:120]}..." for j in range(unit_sims.shape[1])] for i in range(unit_sims.shape[0])]
+                short_queries_display = [q.replace("Initial: ", "(Initial) ")[:50] + ('...' if len(q.replace("Initial: ", "(Initial) ")) > 50 else '') for q in st.session_state.all_queries_for_analysis]
+
                 unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
                 ticks = (list(range(0,len(unit_labels),max(1,len(unit_labels)//15))),[unit_labels[k] for k in range(0,len(unit_labels),max(1,len(unit_labels)//15))]) if len(unit_labels)>25 else (unit_labels,unit_labels)
-                fig_heat = go.Figure(data=go.Heatmap(z=unit_sims.T,x=unit_labels,y=short_sq,colorscale='Viridis', hoverongaps=False,text=np.array(hover).T,hoverinfo='text',zmin=0,zmax=1))
-                fig_heat.update_layout(title=f"{unit_label} Similarity for {url}", xaxis_title=f"{unit_label}s",yaxis_title="Queries",height=max(400,50*len(short_sq)+100), yaxis_autorange='reversed',xaxis=dict(tickmode='array',tickvals=ticks[0],ticktext=ticks[1],automargin=True))
+                
+                fig_heat = go.Figure(data=go.Heatmap(z=unit_sims.T,x=unit_labels,y=short_queries_display,colorscale='Viridis', hoverongaps=False,text=np.array(hover).T,hoverinfo='text',zmin=0,zmax=1))
+                fig_heat.update_layout(title=f"{unit_label} Similarity for {url}", xaxis_title=f"{unit_label}s",yaxis_title="Analysed Queries",height=max(400,50*len(short_queries_display)+100), yaxis_autorange='reversed',xaxis=dict(tickmode='array',tickvals=ticks[0],ticktext=ticks[1],automargin=True))
                 st.plotly_chart(fig_heat, use_container_width=True)
+                
                 st.markdown("---")
-                selected_query_for_detail = st.selectbox(f"Select Query for {unit_label}-level details:", options=st.session_state.synthetic_queries_list, key=f"q_sel_{url_idx}_{url.replace('/', '_')}")
+                # Update selectbox to use all_queries_for_analysis
+                selected_query_for_detail = st.selectbox(f"Select Query for {unit_label}-level details:", options=st.session_state.all_queries_for_analysis, key=f"q_sel_{url_idx}_{url.replace('/', '_')}")
+                
                 if selected_query_for_detail and page_full_text:
-                    if st.checkbox(f"Show highlighted text for '{selected_query_for_detail[:30]}...'?", key=f"cb_hl_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:5].replace(' ','_')}"):
-                        with st.spinner("Highlighting..."): st.markdown(get_highlighted_sentence_html(page_full_text, selected_query_for_detail), unsafe_allow_html=True)
-                    if st.checkbox(f"Show top/bottom N {unit_label.lower()}s for '{selected_query_for_detail[:30]}...'?", key=f"cb_tb_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:5].replace(' ','_')}"):
-                        n_val = st.slider("N for top/bottom:", 1, 10, 3, key=f"sl_tb_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:5].replace(' ','_')}")
+                    query_display_name = selected_query_for_detail.replace("Initial: ", "(Initial) ")[:30] + "..."
+                    if st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:10].replace(' ','_')}"): # Shorter key part
+                        with st.spinner("Highlighting..."): st.markdown(get_highlighted_sentence_html(page_full_text, selected_query_for_detail.replace("Initial: ", "")), unsafe_allow_html=True) # Pass original query text if it's the initial one
+                    
+                    if st.checkbox(f"Show top/bottom N {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:10].replace(' ','_')}"):
+                        n_val = st.slider("N for top/bottom:", 1, 10, 3, key=f"sl_tb_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:10].replace(' ','_')}")
                         with st.spinner(f"Ranking..."):
-                            q_idx = st.session_state.synthetic_queries_list.index(selected_query_for_detail)
+                            q_idx = st.session_state.all_queries_for_analysis.index(selected_query_for_detail)
                             current_q_unit_sims = unit_sims[:, q_idx]
                             scored_units = sorted(list(zip(units, current_q_unit_sims)), key=lambda item: item[1], reverse=True)
+                            
                             st.markdown(f"**Top {n_val} {unit_label}s:**")
                             for u_t, u_s in scored_units[:n_val]:
-                                     st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
+                                st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
                             
-                            st.markdown(f"**Bottom {n_val} {unit_label}s:**") 
+                            st.markdown(f"**Bottom {n_val} {unit_label}s:**")
                             for u_t, u_s in scored_units[-n_val:]:
-                                     st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
-                            
+                                st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
                 elif st.session_state.get("last_analysis_granularity") == "Passage-based (Groups of sentences)": # Fallback for passage details
                      if st.checkbox(f"Show highest/lowest similarity passages?", key=f"cb_passages_old_{url_idx}_{url.replace('/', '_')}"):
-                        for q_idx, sq_txt in enumerate(st.session_state.synthetic_queries_list):
-                            st.markdown(f"##### Query: '{sq_txt}'")
+                        for q_idx, sq_txt in enumerate(st.session_state.all_queries_for_analysis): # Use all_queries here
+                            st.markdown(f"##### Query: '{sq_txt.replace('Initial: ', '(Initial) ')}'")
                             if unit_sims.shape[1] > q_idx:
                                 sims_q = unit_sims[:, q_idx]
                                 if sims_q.size > 0:
@@ -401,4 +419,4 @@ elif st.session_state.get("analysis_done"):
     st.info("Analysis complete, but no data to display. Check inputs or logs.")
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v2.4 (NLTK Removed, Full Functionality)")
+st.sidebar.info("Query Fan-Out Analyzer | v2.5 (Initial Query Integrated)")
