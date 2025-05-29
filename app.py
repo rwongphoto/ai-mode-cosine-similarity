@@ -58,7 +58,7 @@ def enforce_rate_limit():
 
 # --- Models & Driver Setup ---
 @st.cache_resource
-def load_sentence_transformer_model(): return SentenceTransformer('all-MiniLM-L6-v2')
+def load_sentence_transformer_model(): return SentenceTransformer('all-mpnet-base-v2')
 embedding_model = load_sentence_transformer_model()
 
 def initialize_selenium_driver():
