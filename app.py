@@ -249,7 +249,7 @@ use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching", value=True)
 st.sidebar.divider()
 st.sidebar.header("⚙️ Query & URL Configuration")
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
-urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "https://vercel.com/blog/react-server-components\nhttps://www.patterns.dev/posts/react-server-components/", height=100)
+urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "URL 1\nURL2", height=100)
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", min_value=3, max_value=50, value=5)
 s_per_p_val_default = 7
 s_overlap_val_default = 2
