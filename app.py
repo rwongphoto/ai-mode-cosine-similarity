@@ -9,10 +9,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import google.generativeai as genai
 import re
-# import nltk # Import is now conditional/optional
+# import nltk # NLTK import is now conditional
 import ast
 import time
 import random
+import os # For NLTK path if needed for Solution B, though not used in current approach
 
 # --- Selenium Imports ---
 from selenium import webdriver
@@ -30,6 +31,7 @@ if "analysis_done" not in st.session_state: st.session_state.analysis_done = Fal
 if "gemini_api_key_to_persist" not in st.session_state: st.session_state.gemini_api_key_to_persist = ""
 if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_configured = False
 if "selenium_driver_instance" not in st.session_state: st.session_state.selenium_driver_instance = None
+# For NLTK
 if 'nltk_punkt_setup_done' not in st.session_state: st.session_state.nltk_punkt_setup_done = False
 if 'nltk_available' not in st.session_state: st.session_state.nltk_available = False
 
@@ -37,8 +39,6 @@ if 'nltk_available' not in st.session_state: st.session_state.nltk_available = F
 # --- Web Fetching Enhancements ---
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
-
-# --- YOUR FULL USER AGENT LIST ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -59,46 +59,50 @@ def enforce_rate_limit():
     if elapsed < REQUEST_INTERVAL: time.sleep(REQUEST_INTERVAL - elapsed)
     last_request_time = time.time()
 
-# --- NLTK Setup (Optional) ---
-NLTK_AVAILABLE = False
-try:
-    import nltk
-    def download_nltk_punkt_resource_once():
-        global NLTK_AVAILABLE # To modify the global flag
-        if st.session_state.nltk_punkt_setup_done:
-            NLTK_AVAILABLE = st.session_state.nltk_available # Use stored state
-            return
+# --- NLTK Setup (Truly Optional) ---
+def _attempt_nltk_punkt_setup(): # Underscore to indicate internal helper
+    """
+    Attempts to download and verify NLTK's 'punkt' resource.
+    Updates st.session_state.nltk_available.
+    This should only be called if 'import nltk' was successful and setup not yet done.
+    """
+    if st.session_state.nltk_punkt_setup_done:
+        return
 
-        resource_id = "punkt"
-        resource_path_for_find = f"tokenizers/{resource_id}"
+    # This function now assumes 'import nltk' was successful
+    # and 'nltk' module is available in this scope.
+    resource_id = "punkt"
+    resource_path_for_find = f"tokenizers/{resource_id}"
+    try:
+        nltk.data.find(resource_path_for_find)
+        # st.sidebar.info("NLTK 'punkt' resource found.") # Optional debug
+        st.session_state.nltk_available = True
+    except LookupError:
+        st.sidebar.info(f"NLTK '{resource_id}' not found. Attempting download (may fail in restricted envs)...")
         try:
-            nltk.data.find(resource_path_for_find)
-            st.sidebar.info("NLTK 'punkt' resource found.")
-            NLTK_AVAILABLE = True
-        except LookupError:
-            st.sidebar.info(f"NLTK '{resource_id}' not found. Attempting download...")
-            try:
-                nltk.download(resource_id, quiet=True)
-                nltk.data.find(resource_path_for_find) # Verify
-                st.sidebar.success(f"NLTK '{resource_id}' downloaded successfully.")
-                NLTK_AVAILABLE = True
-            except Exception as e_download:
-                st.sidebar.warning(f"NLTK '{resource_id}' download/verification failed: {e_download}. Will use regex for sentences.")
-                NLTK_AVAILABLE = False
-        except Exception as e_initial:
-            st.sidebar.warning(f"NLTK check error for '{resource_id}': {e_initial}. Will use regex.")
-            NLTK_AVAILABLE = False
-        
-        st.session_state.nltk_punkt_setup_done = True
-        st.session_state.nltk_available = NLTK_AVAILABLE
+            nltk.download(resource_id, quiet=True)
+            nltk.data.find(resource_path_for_find) # Verify
+            st.sidebar.success(f"NLTK '{resource_id}' downloaded successfully.")
+            st.session_state.nltk_available = True
+        except Exception as e_download:
+            st.sidebar.warning(f"NLTK '{resource_id}' download/verification failed: {e_download}. Will use regex for sentences.")
+            st.session_state.nltk_available = False
+    except Exception as e_initial: # Catch other errors during the initial find
+        st.sidebar.warning(f"NLTK check error for '{resource_id}': {e_initial}. Will use regex.")
+        st.session_state.nltk_available = False
+    
+    st.session_state.nltk_punkt_setup_done = True
 
-    download_nltk_punkt_resource_once() # Call it to set up
-
+try:
+    import nltk # Attempt to import NLTK
+    # If import is successful, and setup hasn't been done this session, attempt it.
+    if not st.session_state.nltk_punkt_setup_done:
+        _attempt_nltk_punkt_setup()
 except ImportError:
     st.sidebar.warning("NLTK library not installed. Using regex for sentence splitting.")
-    NLTK_AVAILABLE = False # Ensure it's false if import fails
     st.session_state.nltk_available = False
-    st.session_state.nltk_punkt_setup_done = True # Mark setup as "done" (meaning, attempted and failed)
+    st.session_state.nltk_punkt_setup_done = True # Mark as "done" (attempted and failed due to import)
+# --- End NLTK Setup ---
 
 
 # --- Models & Driver Setup ---
@@ -164,23 +168,26 @@ def parse_and_clean_html(html, url):
         return text_content.strip() if text_content.strip() else None
     except Exception as e: st.error(f"HTML parsing error ({url}): {e}"); return None
 
-def split_text_into_sentences(text, use_nltk_if_available=True):
+def split_text_into_sentences(text): # Removed use_nltk_if_available flag, relies on session_state
     if not text: return []
     sentences = []
-    # Use NLTK_AVAILABLE flag which is now correctly set by download_nltk_punkt_resource_once
-    if use_nltk_if_available and st.session_state.get('nltk_available', False):
+    if st.session_state.get('nltk_available', False): # Check session state
         try:
+            # This 'nltk' variable is only defined if the import nltk at the top succeeded
             sentences = nltk.sent_tokenize(text)
-        except Exception as e_nltk:
+        except NameError: # Should not happen if import nltk worked, but defensive
+            st.warning("NLTK module not available despite flag. Using regex.")
+        except Exception as e_nltk: 
             st.warning(f"NLTK sent_tokenize failed: {e_nltk}. Using regex.")
-            pass 
-    if not sentences:
+            sentences = [] # Ensure regex fallback if nltk.sent_tokenize itself errors
+    
+    if not sentences: # Fallback to regex
         sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
 
 def split_text_into_passages(text, s_per_p=7, s_overlap=2):
     if not text: return []
-    sentences = split_text_into_sentences(text, use_nltk_if_available=True) 
+    sentences = split_text_into_sentences(text) 
     if not sentences: return []
     passages, step = [], max(1, s_per_p - s_overlap)
     for i in range(0, len(sentences), step):
@@ -220,16 +227,13 @@ def get_highlighted_sentence_html(page_text_content, query_text):
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     return highlighted_html
 
-# --- generate_synthetic_queries WITH YOUR FULL DETAILED PROMPT ---
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model_name = "gemini-2.5-flash-preview-05-20" # Your preferred model
+    model_name = "gemini-2.5-flash-preview-05-20"
     try: model = genai.GenerativeModel(model_name)
     except Exception as e: st.error(f"Gemini model init error ({model_name}): {e}"); return []
-    
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
-
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique.
     These queries should explore different facets, intents, or related concepts.
     Aim for a mix of the following query types, ensuring variety:
@@ -283,7 +287,7 @@ st.sidebar.divider()
 st.sidebar.header("⚙️ Analysis Configuration")
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
 urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "https://vercel.com/blog/react-server-components\nhttps://www.patterns.dev/posts/react-server-components/", height=100)
-num_sq_val = st.sidebar.slider("Num Synthetic Queries:", min_value=3, max_value=50, value=5)
+num_sq_val = st.sidebar.slider("Num Synthetic Queries:", min_value=3, max_value=10, value=5)
 
 s_per_p_val_default = 7
 s_overlap_val_default = 2
@@ -344,7 +348,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                     continue 
             else:
                 if analysis_granularity == "Sentence-based (Individual sentences)":
-                    processed_units = split_text_into_sentences(text, use_nltk_if_available=st.session_state.get('nltk_available', False))
+                    processed_units = split_text_into_sentences(text) # No need to pass NLTK_AVAILABLE, it uses session_state
                 else:
                     processed_units = split_text_into_passages(text, s_per_p_val, actual_overlap)
                 if not processed_units:
@@ -445,4 +449,4 @@ elif st.session_state.get("analysis_done"):
     st.info("Analysis complete, but no data to display. Check inputs or logs.")
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v2.2 (NLTK Optional & Full Prompt)")
+st.sidebar.info("Query Fan-Out Analyzer | v2.3 (NLTK Optional, Full Prompts/UAs)")
