@@ -379,8 +379,14 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                             q_idx = st.session_state.synthetic_queries_list.index(selected_query_for_detail)
                             current_q_unit_sims = unit_sims[:, q_idx]
                             scored_units = sorted(list(zip(units, current_q_unit_sims)), key=lambda item: item[1], reverse=True)
-                            st.markdown(f"**Top {n_val} {unit_label}s:**"); [st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...") for u_t,u_s in scored_units[:n_val]]
-                            st.markdown(f"**Bottom {n_val} {unit_label}s:**"); [st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...") for u_t,u_s in scored_units[-n_val:]]
+                            st.markdown(f"**Top {n_val} {unit_label}s:**")
+                            for u_t, u_s in scored_units[:n_val]:
+                                     st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
+                            
+                            st.markdown(f"**Bottom {n_val} {unit_label}s:**") 
+                            for u_t, u_s in scored_units[-n_val:]:
+                                     st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
+                            
                 elif st.session_state.get("last_analysis_granularity") == "Passage-based (Groups of sentences)": # Fallback for passage details
                      if st.checkbox(f"Show highest/lowest similarity passages?", key=f"cb_passages_old_{url_idx}_{url.replace('/', '_')}"):
                         for q_idx, sq_txt in enumerate(st.session_state.synthetic_queries_list):
