@@ -18,7 +18,7 @@ import random
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
-# from webdriver_manager.chrome import ChromeDriverManager # For easy local chromedriver management
+# from webdriver_manager.chrome import ChromeDriverManager
 
 # --- Page Configuration ---
 st.set_page_config(layout="wide", page_title="AI Query Fan-Out Analyzer")
@@ -28,12 +28,12 @@ REQUEST_INTERVAL = 3.0
 last_request_time = 0
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.90 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
 ]
 
 def get_random_user_agent():
@@ -75,13 +75,11 @@ def setup_selenium_driver():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument(f"user-agent={get_random_user_agent()}")
     try:
-        # For server, ensure chromedriver is in PATH or specify executable_path
-        # service = ChromeService(executable_path='/path/to/chromedriver')
-        service = ChromeService() # Assumes chromedriver is in PATH
+        service = ChromeService()
         driver = webdriver.Chrome(service=service, options=chrome_options)
         return driver
     except Exception as e:
-        st.error(f"Selenium WebDriver init failed: {e}. Ensure setup. Selenium might not work in all cloud envs.")
+        st.error(f"Selenium WebDriver init failed: {e}. Ensure setup. May not work in all cloud envs.")
         return None
 
 # --- Session State & API Key ---
@@ -123,14 +121,13 @@ def fetch_content_with_selenium(url, _driver):
     enforce_rate_limit()
     try:
         _driver.get(url)
-        time.sleep(5) # Adjust or use WebDriverWait
+        time.sleep(5)
         return _driver.page_source
     except Exception as e:
         st.error(f"Selenium error ({url}): {e}")
         return None
 
 def fetch_content_with_requests(url):
-    # enforce_rate_limit() # Called by the primary fetch logic if this is a fallback
     try:
         headers = {'User-Agent': get_random_user_agent()}
         response = requests.get(url, timeout=20, headers=headers)
@@ -194,7 +191,7 @@ def get_embeddings(_texts):
     if not _texts: return np.array([])
     return embedding_model.encode(_texts)
 
-# --- THIS IS THE CORRECTED generate_synthetic_queries with FULL FAN-OUT PROMPT ---
+# --- THIS IS THE CORRECT generate_synthetic_queries with FULL FAN-OUT PROMPT ---
 @st.cache_data(show_spinner="Generating synthetic queries with Gemini...")
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False):
@@ -208,6 +205,7 @@ def generate_synthetic_queries(user_query, num_queries=7):
         st.error(f"Could not initialize Gemini model ({model_name}): {e}")
         return []
 
+    # --- THIS IS THE CORRECT, DETAILED FAN-OUT PROMPT ---
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
 
@@ -231,46 +229,57 @@ def generate_synthetic_queries(user_query, num_queries=7):
       ["synthetic query 1", "another synthetic query", "a third different query"]
     - Each query in the list should be a complete, self-contained search query string.
     """
+    # --- END OF DETAILED PROMPT ---
+
     try:
         response = model.generate_content(prompt)
         content_text = "".join(part.text for part in response.parts if hasattr(part, 'text')) if hasattr(response, 'parts') and response.parts else response.text
         content_text = content_text.strip()
         try:
+            # Cleanup for markdown code blocks if Gemini uses them
             for prefix_str in ["```python", "```json", "```"]:
                 if content_text.startswith(prefix_str):
                     content_text = content_text.split(prefix_str, 1)[1].rsplit("```", 1)[0].strip()
                     break
-            if not content_text.startswith('['):
+            
+            if not content_text.startswith('['): # If not a list string, try splitting by newline
                 queries_list = [re.sub(r'^\s*[-\*\d\.]+\s*', '', q.strip().strip('"\'')) for q in content_text.split('\n') if q.strip() and len(q.strip()) > 3]
             else:
-                queries_list = ast.literal_eval(content_text)
+                queries_list = ast.literal_eval(content_text) # Main parsing attempt
+            
             if not isinstance(queries_list, list) or not all(isinstance(q_str, str) for q_str in queries_list):
                 raise ValueError("Parsed result is not a list of strings.")
-            return [q_str for q_str in queries_list if q_str.strip()]
-        except (SyntaxError, ValueError) as e:
-            st.error(f"Error parsing Gemini's response: {e}. Raw (first 300 chars): \n{content_text[:300]}...")
-            extracted_queries_list = [re.sub(r'^\s*[-\*\d\.]+\s*', '', line.strip().strip('"\'')) for line in content_text.split('\n') if line.strip() and len(line.strip()) > 3]
+            
+            return [q_str for q_str in queries_list if q_str.strip()] # Ensure no empty strings in the final list
+        
+        except (SyntaxError, ValueError) as e: # Fallback parsing
+            st.error(f"Error parsing Gemini's response: {e}. Raw response (first 300 chars): \n{content_text[:300]}...")
+            # Fallback: try to extract queries if they are line-separated or bulleted
+            lines = content_text.split('\n')
+            extracted_queries_list = [re.sub(r'^\s*[-\*\d\.]+\s*', '', line.strip().strip('"\'')) for line in lines if line.strip() and len(line.strip()) > 3]
             if extracted_queries_list:
                 st.warning("Used fallback parsing for synthetic queries.")
                 return extracted_queries_list
-            return []
+            return [] # Return empty if all parsing fails
+            
     except Exception as e:
         st.error(f"Error calling Gemini API: {e}")
         if hasattr(e, 'message'): st.error(f"Gemini API Error Message: {e.message}")
         return []
-# --- END OF CORRECTED generate_synthetic_queries ---
+# --- END OF generate_synthetic_queries ---
+
 
 # --- Main UI ---
 st.title("🌐 AI Query Fan-Out & Webpage Analyzer")
 st.markdown("Fetch content, generate diverse queries, visualize alignment. **Requires Gemini API Key & Selenium setup for best results.**")
 
-use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching (more robust, needs setup)", value=False, help="May bypass anti-bot measures. Requires Chromedriver.")
+use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching (more robust, needs setup)", value=True, help="May bypass anti-bot measures. Requires Chromedriver.")
 
 st.sidebar.divider()
 st.sidebar.header("⚙️ Analysis Configuration")
 initial_query_input = st.sidebar.text_input("Initial Search Query:", "understanding cloud security posture management")
 url_inputs_text_area = st.sidebar.text_area("Enter URLs (one per line):", "https://www.paloaltonetworks.com/cyberpedia/what-is-cspm\nhttps://www.crowdstrike.com/cybersecurity-101/cloud-security/cloud-security-posture-management-cspm/", height=100)
-num_synthetic_queries_slider = st.sidebar.slider("Num Synthetic Queries:", 5, 10, 25)
+num_synthetic_queries_slider = st.sidebar.slider("Num Synthetic Queries:", 3, 10, 5)
 st.sidebar.subheader("Passage Settings:")
 sentences_per_passage_slider = st.sidebar.slider("Sentences/Passage:", 2, 20, 7)
 sentence_overlap_slider = st.sidebar.slider("Sentence Overlap:", 0, 10, 2)
@@ -318,7 +327,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
             if not page_text_content or len(page_text_content.strip()) < 30:
                 st.warning(f"Insufficient text from {current_url}. Attempting overall score if any text.")
                 if page_text_content: current_passages_list = [page_text_content]
-                else: # No text at all
+                else:
                     for sq_idx_val, syn_query_val in enumerate(synthetic_queries_list):
                         all_url_metrics_list.append({"URL": current_url, "Query": syn_query_val, "Overall Similarity": 0.0, "Max Passage Sim.": 0.0, "Avg. Passage Sim.": 0.0, "Num Passages": 0})
                     continue
@@ -333,6 +342,13 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
 
             if passage_embeddings_arr.size > 0:
                 calc_passage_embs = passage_embeddings_arr.reshape(1, -1) if passage_embeddings_arr.ndim == 1 else passage_embeddings_arr
+                
+                if synthetic_query_embeddings_arr is None or synthetic_query_embeddings_arr.size == 0:
+                    st.error("Synthetic query embeddings are missing. Cannot calculate similarities.")
+                    for sq_idx_val, syn_query_val in enumerate(synthetic_queries_list):
+                        all_url_metrics_list.append({"URL": current_url, "Query": syn_query_val, "Overall Similarity": 0.0, "Max Passage Sim.": 0.0, "Avg. Passage Sim.": 0.0, "Num Passages": len(current_passages_list)})
+                    continue
+
                 overall_url_emb_arr = np.mean(calc_passage_embs, axis=0).reshape(1, -1)
                 overall_sims_to_queries_arr = cosine_similarity(overall_url_emb_arr, synthetic_query_embeddings_arr)[0]
                 passage_sims_to_queries_arr = cosine_similarity(calc_passage_embs, synthetic_query_embeddings_arr)
@@ -340,11 +356,14 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
 
                 for sq_idx_val, syn_query_val in enumerate(synthetic_queries_list):
                     query_passage_sims_arr = passage_sims_to_queries_arr[:, sq_idx_val]
+                    max_sim = np.max(query_passage_sims_arr) if query_passage_sims_arr.size > 0 else 0.0
+                    avg_sim = np.mean(query_passage_sims_arr) if query_passage_sims_arr.size > 0 else 0.0
+                    
                     all_url_metrics_list.append({
                         "URL": current_url, "Query": syn_query_val,
                         "Overall Similarity": overall_sims_to_queries_arr[sq_idx_val],
-                        "Max Passage Sim.": np.max(query_passage_sims_arr) if query_passage_sims_arr.size > 0 else 0.0,
-                        "Avg. Passage Sim.": np.mean(query_passage_sims_arr) if query_passage_sims_arr.size > 0 else 0.0,
+                        "Max Passage Sim.": max_sim,
+                        "Avg. Passage Sim.": avg_sim,
                         "Num Passages": len(current_passages_list)
                     })
             else:
@@ -356,16 +375,18 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
 
     st.markdown("---"); st.subheader("📈 Overall Similarity & Passage Metrics Summary")
     df_summary_table = pd.DataFrame(all_url_metrics_list)
-    df_summary_table['URL_Short'] = df_summary_table['URL'].apply(lambda x_url: x_url.split('//')[-1].split('/')[0][:40] + ('...' if len(x_url.split('//')[-1].split('/')[0]) > 40 else ''))
-    st.dataframe(df_summary_table[['URL_Short', 'Query', 'Overall Similarity', 'Max Passage Sim.', 'Avg. Passage Sim.', 'Num Passages']].style.format({
+    st.dataframe(df_summary_table[['URL', 'Query', 'Overall Similarity', 'Max Passage Sim.', 'Avg. Passage Sim.', 'Num Passages']].style.format({
         "Overall Similarity": "{:.3f}", "Max Passage Sim.": "{:.3f}", "Avg. Passage Sim.": "{:.3f}"
-    }), use_container_width=True, height=(min(len(df_summary_table) * 38, 600)))
+    }), use_container_width=True, height=(min(len(df_summary_table) * 38 + 38, 700)))
+
 
     st.markdown("---"); st.subheader("📊 Visual: Overall URL vs. Synthetic Query Similarity")
-    df_overall_sim_bar_chart = df_summary_table.drop_duplicates(subset=['URL_Short', 'Query'])
-    fig_bar_chart = px.bar(df_overall_sim_bar_chart, x="Query", y="Overall Similarity", color="URL_Short", barmode="group",
-                           title="Overall Webpage Similarity to Synthetic Queries", height=max(500, 90 * num_synthetic_queries_slider))
-    fig_bar_chart.update_xaxes(tickangle=25, automargin=True); fig_bar_chart.update_yaxes(range=[0,1])
+    df_overall_sim_bar_chart = df_summary_table.drop_duplicates(subset=['URL', 'Query'])
+    fig_bar_chart = px.bar(df_overall_sim_bar_chart, x="Query", y="Overall Similarity", color="URL", barmode="group",
+                           title="Overall Webpage Similarity to Synthetic Queries", height=max(600, 100 * num_synthetic_queries_slider))
+    fig_bar_chart.update_xaxes(tickangle=30, automargin=True, title_text=None)
+    fig_bar_chart.update_yaxes(range=[0,1])
+    fig_bar_chart.update_layout(legend_title_text='Webpage URL')
     st.plotly_chart(fig_bar_chart, use_container_width=True)
 
     st.markdown("---"); st.subheader("🔥 Passage Heatmaps vs. Synthetic Queries")
@@ -382,7 +403,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
 
             fig_heatmap_obj = go.Figure(data=go.Heatmap(z=passage_similarities_arr_val.T, x=passage_labels_list, y=short_synthetic_queries, colorscale='Viridis',
                                                          hoverongaps=False, text=np.array(hover_matrix_text).T, hoverinfo='text', zmin=0, zmax=1))
-            fig_heatmap_obj.update_layout(title=f"Passage Similarity for {current_url_val.split('//')[-1].split('/')[0]}",
+            fig_heatmap_obj.update_layout(title=f"Passage Similarity for {current_url_val}",
                                            xaxis_title="Passages", yaxis_title="Queries", height=max(400,50*len(synthetic_queries_list)+100),
                                            yaxis_autorange='reversed', xaxis=dict(tickmode='array',tickvals=heatmap_ticks_info[0],ticktext=heatmap_ticks_info[1],automargin=True))
             st.plotly_chart(fig_heatmap_obj, use_container_width=True)
@@ -398,4 +419,4 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
                             st.markdown(f"**Least Similar (P{idx_min_val+1} - Score: {sims_for_query_arr[idx_min_val]:.3f}):**"); st.caption(passages_list_val[idx_min_val])
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v1.5")
+st.sidebar.info("Query Fan-Out Analyzer | v1.7 (Fan-Out Prompt Restored)")
