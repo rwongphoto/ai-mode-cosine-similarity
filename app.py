@@ -265,7 +265,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
     if not initial_query_val or not urls_text_area_val: st.warning("Need initial query and URLs."); st.stop()
 
     with st.spinner("Loading bi-encoder model..."): # Simplified spinner message
-        embedding_model_instance, _ = load_embedding_models() # Only bi-encoder needed now
+        embedding_model_instance = load_bi_encoder_model() # Only bi-encoder needed now
     if embedding_model_instance is None: st.error("Bi-Encoder model failed. Cannot proceed."); st.stop()
 
     st.session_state.all_url_metrics_list = []
@@ -413,7 +413,7 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps (Bi-Encoder Scores) vs. All Queries")
     if st.session_state.url_processed_units_dict and st.session_state.all_queries_for_analysis:
-        bi_encoder_for_display, _ = load_embedding_models() # Only need bi-encoder for display
+        bi_encoder_for_display = load_bi_encoder_model() # Only need bi-encoder for display
 
         for url_idx, (url, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
             with st.expander(f"Heatmap & Details for: {url}", expanded=(url_idx==0)):
