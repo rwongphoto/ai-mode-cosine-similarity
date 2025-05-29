@@ -249,7 +249,7 @@ num_sq_val = st.sidebar.slider("Num Synthetic Queries:", 5, 10, 25, 50)
 # Conditionally show passage settings
 if analysis_granularity == "Passage-based (Groups of sentences)":
     st.sidebar.subheader("Passage Settings:")
-    s_per_p_val = st.sidebar.slider("Sentences/Passage:", 2, 5, 7, 10, 20)
+    s_per_p_val = st.sidebar.slider("Sentences/Passage:", 2, 5, 10, 20, 7)
     s_overlap_val = st.sidebar.slider("Sentence Overlap:", 0, 10, 2)
 else: # For sentence-based, these don't apply
     s_per_p_val = 1 # Effectively, each sentence is a "passage"
