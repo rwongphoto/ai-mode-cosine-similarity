@@ -49,7 +49,7 @@ def enforce_rate_limit():
     last_request_time = time.time()
 
 # --- NLTK ---
-@st.cache_resource
+# @st.cache_resource # REMOVED CACHING
 def download_nltk_resources():
     resource_id = 'tokenizers/punkt'
     try: nltk.data.find(resource_id)
@@ -61,13 +61,15 @@ def download_nltk_resources():
 download_nltk_resources()
 
 # --- Models ---
-@st.cache_resource
+# @st.cache_resource # REMOVED CACHING
 def load_sentence_transformer():
+    st.write("DEBUG: load_sentence_transformer EXECUTING (NO CACHE)") # Debug print
     return SentenceTransformer('all-MiniLM-L6-v2')
 embedding_model = load_sentence_transformer()
 
-@st.cache_resource
+# @st.cache_resource # REMOVED CACHING
 def setup_selenium_driver():
+    st.write("DEBUG: setup_selenium_driver EXECUTING (NO CACHE)") # Debug print
     chrome_options = ChromeOptions()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -113,8 +115,9 @@ if st.session_state.get("gemini_api_configured"):
 else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 
 # --- Helper Functions ---
-@st.cache_data(show_spinner="Fetching URL with Selenium...")
+# @st.cache_data(show_spinner="Fetching URL with Selenium...") # REMOVED CACHING
 def fetch_content_with_selenium(url, _driver):
+    st.write(f"DEBUG: fetch_content_with_selenium EXECUTING for {url} (NO CACHE)") # Debug print
     if not _driver:
         st.warning(f"Selenium driver not available for {url}. Falling back to requests.")
         return fetch_content_with_requests(url)
@@ -128,6 +131,7 @@ def fetch_content_with_selenium(url, _driver):
         return None
 
 def fetch_content_with_requests(url):
+    st.write(f"DEBUG: fetch_content_with_requests EXECUTING for {url} (NO CACHE)") # Debug print
     try:
         headers = {'User-Agent': get_random_user_agent()}
         response = requests.get(url, timeout=20, headers=headers)
@@ -136,8 +140,9 @@ def fetch_content_with_requests(url):
     except requests.exceptions.Timeout: st.error(f"Requests timeout ({url})."); return None
     except requests.exceptions.RequestException as e: st.error(f"Requests error ({url}): {e}"); return None
 
-@st.cache_data(show_spinner="Parsing and cleaning URL content...")
+# @st.cache_data(show_spinner="Parsing and cleaning URL content...") # REMOVED CACHING
 def parse_and_clean_html(html_content, url):
+    st.write(f"DEBUG: parse_and_clean_html EXECUTING for {url} (NO CACHE)") # Debug print
     if not html_content: return None
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -172,8 +177,9 @@ def parse_and_clean_html(html_content, url):
         return text_content
     except Exception as e: st.error(f"HTML parsing error ({url}): {e}"); return None
 
-@st.cache_data(show_spinner="Splitting text into passages...")
+# @st.cache_data(show_spinner="Splitting text into passages...") # REMOVED CACHING
 def split_text_into_passages(text, sentences_per_passage=7, sentence_overlap=2):
+    st.write(f"DEBUG: split_text_into_passages EXECUTING (NO CACHE). Input text len: {len(text) if text else 0}") # Debug print
     if not text: return []
     try: sentences_list = nltk.sent_tokenize(text)
     except Exception:
@@ -186,33 +192,33 @@ def split_text_into_passages(text, sentences_per_passage=7, sentence_overlap=2):
         if passage_text_chunk.strip() and len(passage_text_chunk.split()) > 10: passages_list.append(passage_text_chunk)
     return [p for p in passages_list if p.strip()]
 
-@st.cache_data
+# @st.cache_data # REMOVED CACHING
 def get_embeddings(_texts):
-    if not _texts: return np.array([])
-    # st.write(f"DEBUG: get_embeddings called with _texts: {_texts[:1] if _texts else 'Empty'}") # Optional: Check input to get_embeddings
+    if not _texts:
+        st.write("DEBUG: get_embeddings called with empty _texts (NO CACHE). Returning empty array.")
+        return np.array([])
+    st.write(f"DEBUG: get_embeddings EXECUTING (NO CACHE). Num texts: {len(_texts)}. First text sample: '{_texts[0][:70] if _texts else 'N/A'}'")
     embeddings = embedding_model.encode(_texts)
-    # st.write(f"DEBUG: get_embeddings produced shape: {embeddings.shape}") # Optional: Check output of get_embeddings
+    st.write(f"DEBUG: get_embeddings (NO CACHE) produced embeddings of shape: {embeddings.shape}")
     return embeddings
 
 
-# --- THIS IS THE CORRECT generate_synthetic_queries with FULL FAN-OUT PROMPT ---
-@st.cache_data(show_spinner="Generating synthetic queries with Gemini...")
+# @st.cache_data(show_spinner="Generating synthetic queries with Gemini...") # REMOVED CACHING
 def generate_synthetic_queries(user_query, num_queries=7):
+    st.write(f"DEBUG: generate_synthetic_queries EXECUTING for '{user_query}' (NO CACHE)") # Debug print
     if not st.session_state.get("gemini_api_configured", False):
         st.error("Gemini API not configured.")
         return []
 
-    model_name = "gemini-2.5-flash-preview-05-20" # Changed from 2.5 preview, as it may not be available for all users
+    model_name = "gemini-1.5-flash-latest" 
     try:
         model = genai.GenerativeModel(model_name)
     except Exception as e:
         st.error(f"Could not initialize Gemini model ({model_name}): {e}")
         return []
 
-    # --- THIS IS THE CORRECT, DETAILED FAN-OUT PROMPT ---
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
-
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique.
     These queries should explore different facets, intents, or related concepts.
     Aim for a mix of the following query types, ensuring variety:
@@ -223,7 +229,6 @@ def generate_synthetic_queries(user_query, num_queries=7):
     5.  Personalized Queries (Hypothetical): What might a user with a specific interest (e.g., technical depth, practical application, historical context) search for related to the initial query?
     6.  Reformulation Queries: Different ways of phrasing the same core intent or asking slightly different questions about the main topic.
     7.  Entity-Expanded Queries: Queries that focus on specific entities, people, organizations, or concepts mentioned or implied by the initial query, or expand to related entities.
-
     CRITICAL INSTRUCTIONS:
     - Ensure the generated queries span multiple query categories from the list above.
     - The queries should be distinct and aim to retrieve diverse content types or aspects.
@@ -233,44 +238,34 @@ def generate_synthetic_queries(user_query, num_queries=7):
       ["synthetic query 1", "another synthetic query", "a third different query"]
     - Each query in the list should be a complete, self-contained search query string.
     """
-    # --- END OF DETAILED PROMPT ---
-
     try:
         response = model.generate_content(prompt)
         content_text = "".join(part.text for part in response.parts if hasattr(part, 'text')) if hasattr(response, 'parts') and response.parts else response.text
         content_text = content_text.strip()
         try:
-            # Cleanup for markdown code blocks if Gemini uses them
             for prefix_str in ["```python", "```json", "```"]:
                 if content_text.startswith(prefix_str):
                     content_text = content_text.split(prefix_str, 1)[1].rsplit("```", 1)[0].strip()
                     break
-            
-            if not content_text.startswith('['): # If not a list string, try splitting by newline
+            if not content_text.startswith('['): 
                 queries_list = [re.sub(r'^\s*[-\*\d\.]+\s*', '', q.strip().strip('"\'')) for q in content_text.split('\n') if q.strip() and len(q.strip()) > 3]
             else:
-                queries_list = ast.literal_eval(content_text) # Main parsing attempt
-            
+                queries_list = ast.literal_eval(content_text)
             if not isinstance(queries_list, list) or not all(isinstance(q_str, str) for q_str in queries_list):
                 raise ValueError("Parsed result is not a list of strings.")
-            
-            return [q_str for q_str in queries_list if q_str.strip()] # Ensure no empty strings in the final list
-        
-        except (SyntaxError, ValueError) as e: # Fallback parsing
-            st.error(f"Error parsing Gemini's response: {e}. Raw response (first 300 chars): \n{content_text[:300]}...")
-            # Fallback: try to extract queries if they are line-separated or bulleted
+            return [q_str for q_str in queries_list if q_str.strip()]
+        except (SyntaxError, ValueError) as e: 
+            st.error(f"Error parsing Gemini's response: {e}. Raw: \n{content_text[:300]}...")
             lines = content_text.split('\n')
             extracted_queries_list = [re.sub(r'^\s*[-\*\d\.]+\s*', '', line.strip().strip('"\'')) for line in lines if line.strip() and len(line.strip()) > 3]
             if extracted_queries_list:
                 st.warning("Used fallback parsing for synthetic queries.")
                 return extracted_queries_list
-            return [] # Return empty if all parsing fails
-            
+            return []
     except Exception as e:
         st.error(f"Error calling Gemini API: {e}")
         if hasattr(e, 'message'): st.error(f"Gemini API Error Message: {e.message}")
         return []
-# --- END OF generate_synthetic_queries ---
 
 
 # --- Main UI ---
@@ -296,29 +291,26 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
 
     active_driver = None
     if use_selenium_opt:
-        if not st.session_state.get("selenium_driver"):
-            with st.spinner("Initializing Selenium WebDriver..."):
+        # No caching for setup_selenium_driver, so it might re-initialize if not in session_state
+        if "selenium_driver" not in st.session_state or st.session_state.selenium_driver is None:
+             with st.spinner("Initializing Selenium WebDriver..."):
                 st.session_state.selenium_driver = setup_selenium_driver()
         active_driver = st.session_state.selenium_driver
         if not active_driver: st.warning("Selenium driver failed. Using 'requests'.")
 
+
     urls_list = [url_str.strip() for url_str in url_inputs_text_area.split('\n') if url_str.strip()]
     if sentence_overlap_slider >= sentences_per_passage_slider: sentence_overlap_slider = max(0, sentences_per_passage_slider - 1)
 
+    # No caching for generate_synthetic_queries, so it will run every time
     synthetic_queries_list = generate_synthetic_queries(initial_query_input, num_synthetic_queries_slider)
     if not synthetic_queries_list: st.error("No synthetic queries generated."); st.stop()
 
     st.subheader("🤖 Generated Synthetic Queries")
     st.expander("View Queries").json(synthetic_queries_list)
+    
+    # No caching for get_embeddings on synthetic queries
     synthetic_query_embeddings_arr = get_embeddings(synthetic_queries_list)
-    # --- DEBUG: Check synthetic query embeddings ---
-    # st.write("--- DEBUG: SYNTHETIC QUERY EMBEDDINGS ---")
-    # if synthetic_query_embeddings_arr is not None and synthetic_query_embeddings_arr.size > 0:
-    #     st.write(f"Shape: {synthetic_query_embeddings_arr.shape}")
-    #     st.write(f"First embedding (first 5 values): {synthetic_query_embeddings_arr[0, :5]}")
-    # else:
-    #     st.write("Synthetic query embeddings are None or empty.")
-    # --- END DEBUG ---
 
 
     all_url_metrics_list = []
@@ -329,11 +321,13 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
             st.markdown(f"--- \n#### Processing URL {i_url+1}: {current_url}")
             
             page_html_content = None
+            # No caching for fetch_content_with_selenium / fetch_content_with_requests
             if use_selenium_opt and active_driver:
                 page_html_content = fetch_content_with_selenium(current_url, active_driver)
             if not page_html_content:
                 page_html_content = fetch_content_with_requests(current_url)
 
+            # No caching for parse_and_clean_html
             page_text_content = parse_and_clean_html(page_html_content, current_url)
             current_passages_list = []
 
@@ -345,11 +339,13 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
                         all_url_metrics_list.append({"URL": current_url, "Query": syn_query_val, "Overall Similarity": 0.0, "Max Passage Sim.": 0.0, "Avg. Passage Sim.": 0.0, "Num Passages": 0})
                     continue
             else:
+                # No caching for split_text_into_passages
                 current_passages_list = split_text_into_passages(page_text_content, sentences_per_passage_slider, sentence_overlap_slider)
                 if not current_passages_list:
                     st.info(f"No distinct passages from {current_url}. Using entire content as one passage.")
                     current_passages_list = [page_text_content]
             
+            # No caching for get_embeddings on passages
             passage_embeddings_arr = get_embeddings(current_passages_list)
             url_passage_data_dict[current_url] = {"passages": current_passages_list, "embeddings": passage_embeddings_arr, "passage_similarities": None}
 
@@ -444,4 +440,4 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_bu
                             st.markdown(f"**Least Similar (P{idx_min_val+1} - Score: {sims_for_query_arr[idx_min_val]:.3f}):**"); st.caption(passages_list_val[idx_min_val])
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v1.7.1 (Debug Added)")
+st.sidebar.info("Query Fan-Out Analyzer | v1.7.2 (All Caching Removed)")
