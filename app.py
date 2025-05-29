@@ -13,6 +13,7 @@ import nltk
 import ast
 import time
 import random
+import os # Add this import at the top of your script
 
 # --- Selenium Imports ---
 from selenium import webdriver
@@ -44,49 +45,59 @@ def enforce_rate_limit():
     last_request_time = time.time()
 
 # --- NLTK ---
-@st.cache_resource # Caching this function is good as NLTK download is a one-time setup per environment.
+@st.cache_resource
 def download_nltk_resources():
     """
-    Checks for the NLTK 'punkt' tokenizer resource and downloads it if not found.
+    Checks for the NLTK 'punkt' tokenizer resource, downloads it if not found,
+    and tries to ensure NLTK can find its data paths.
     Provides feedback to the user via Streamlit's sidebar.
     """
-    resource_id = "punkt"  # The name of the NLTK resource to download
-    resource_path_for_find = f"tokenizers/{resource_id}" # How nltk.data.find() looks it up
+    resource_id = "punkt"
+    resource_path_for_find = f"tokenizers/{resource_id}"
+
+    # --- Attempt to add common NLTK data paths for managed environments ---
+    # These are common paths; adjust if your Posit Connect environment uses something specific
+    # The goal is to ensure NLTK's search path includes where 'punkt' might be downloaded or pre-exist.
+    potential_paths = [
+        os.path.join(os.path.expanduser("~"), "nltk_data"), # User's home directory
+        "/usr/share/nltk_data",
+        "/usr/local/share/nltk_data",
+        "/usr/lib/nltk_data",
+        "/usr/local/lib/nltk_data",
+        # Add any path specific to your Posit Connect Python environment if known
+        # e.g., os.path.join(os.sys.prefix, 'nltk_data'),
+        # os.path.join(os.sys.prefix, 'share', 'nltk_data'),
+        # os.path.join(os.sys.prefix, 'lib', 'nltk_data'),
+    ]
+    # Prepend these paths to NLTK's search list.
+    # Existing paths in nltk.data.path are usually checked later.
+    for p_path in potential_paths:
+        if os.path.isdir(p_path) and p_path not in nltk.data.path:
+            nltk.data.path.insert(0, p_path) # Prepend to prioritize
+    # st.sidebar.write(f"NLTK data paths being searched: {nltk.data.path}") # For debugging
 
     try:
-        # Check if the resource is already available in any of NLTK's search paths
         nltk.data.find(resource_path_for_find)
-        # If found, no need to do anything further.
-        # You could optionally add a success message for debugging if you like:
         # st.sidebar.info(f"NLTK resource '{resource_id}' already available.")
     except LookupError:
-        # This exception means the resource was not found.
         st.sidebar.info(f"NLTK resource '{resource_id}' not found. Attempting to download...")
         try:
-            # Attempt to download the resource.
-            # quiet=True suppresses verbose NLTK download output in the console.
-            nltk.download(resource_id, quiet=True)
-            
-            # After attempting download, verify it's now findable.
-            # This will raise a LookupError if the download failed or didn't place it correctly.
+            # Try downloading to the first writable path in nltk.data.path
+            # If NLTK_DATA env var is set, it should use that.
+            nltk.download(resource_id, quiet=True) 
             nltk.data.find(resource_path_for_find) 
-            st.sidebar.success(f"NLTK resource '{resource_id}' downloaded successfully.")
+            st.sidebar.success(f"NLTK resource '{resource_id}' downloaded/verified successfully.")
         except Exception as e_download:
-            # Catch any error during the download or the verification find()
             st.sidebar.error(f"Failed to download or verify NLTK resource '{resource_id}'. Error: {e_download}")
             st.sidebar.markdown(
-                "Please ensure your environment has internet access or that the NLTK 'punkt' "
-                "resource is pre-installed in one of the NLTK data paths (check server logs for details). "
+                "Please check internet access or ensure 'punkt' is pre-installed in NLTK data paths. "
                 "Sentence tokenization might be impaired."
             )
-            # Depending on how critical 'punkt' is, you might consider st.stop() here.
     except Exception as e_initial_find:
-        # Catch any other unexpected errors during the initial nltk.data.find() call
         st.sidebar.warning(
-            f"An unexpected error occurred while checking for NLTK resource '{resource_id}': {e_initial_find}"
+            f"Unexpected error checking for NLTK resource '{resource_id}': {e_initial_find}"
         )
 
-# Call the function to ensure 'punkt' is available when the app starts.
 download_nltk_resources()
 
 # --- Models & Driver Setup (Keep existing) ---
