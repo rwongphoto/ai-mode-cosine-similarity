@@ -95,8 +95,34 @@ if st.session_state.get("gemini_api_configured"):
 else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 
 def fetch_content_with_selenium(url, driver_instance):
-    if not driver_instance: st.warning(f"Selenium N/A for {url}. Fallback."); return fetch_content_with_requests(url)
-    enforce_rate_limit(); driver_instance.get(url); time.sleep(5); return driver_instance.page_source
+    if not driver_instance: 
+        st.warning(f"Selenium N/A for {url}. Fallback."); 
+        return fetch_content_with_requests(url) # Use requests immediately if driver is None
+
+    try:
+        enforce_rate_limit()
+        # The line below is where the timeout occurs
+        driver_instance.get(url) 
+        time.sleep(5) # Optional: Add waits for elements if page is dynamic
+        return driver_instance.page_source
+    except Exception as e:
+        # Catch any exception that occurs during the .get() call or subsequent operations
+        st.error(f"Selenium fetch error for {url}: {e}")
+        # Attempt to quit the driver to clean up resources
+        try:
+            driver_instance.quit()
+        except:
+            # Ignore errors if quit() itself fails on a broken instance
+            pass
+        # Invalidate the driver instance in session state
+        st.session_state.selenium_driver_instance = None
+        # Fallback to requests for this specific URL
+        st.warning(f"Selenium failed for {url}. Falling back to requests.")
+        try:
+            return fetch_content_with_requests(url)
+        except Exception as req_e:
+            st.error(f"Requests fallback also failed for {url}: {req_e}")
+            return None # Both methods failed
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
 
