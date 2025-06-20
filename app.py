@@ -216,29 +216,45 @@ def split_text_into_passages(text, s_per_p=7, s_overlap=2):
         if chunk.strip() and len(chunk.split()) > 10: passages.append(chunk)
     return [p for p in passages if p.strip()]
 
-def get_highlighted_sentence_html(page_text_content, query_text, local_model_instance=None):
+def get_highlighted_sentence_html(page_text_content, query_text, local_model_instance=None, unit_scores_map=None):
+    """
+    Highlights sentences based on scores.
+    If unit_scores_map is provided (from a passage-based analysis), it colors all sentences
+    in a passage with that passage's score for consistency with the heatmap.
+    Otherwise, it calculates scores sentence-by-sentence.
+    """
     if not page_text_content or not query_text: return ""
     sentences = split_text_into_sentences(page_text_content)
     if not sentences: return "<p>No sentences to highlight.</p>"
-    
-    sentence_embeddings = get_embeddings(sentences, local_model_instance)
-    query_embedding = get_embeddings([query_text], local_model_instance)
-    
-    if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings.</p>"
-    
-    query_embedding = query_embedding[0].reshape(1, -1)
-    similarities = cosine_similarity(sentence_embeddings, query_embedding).flatten()
-    
-    if not similarities.size: return "<p>No similarity scores.</p>"
-    
+
     highlighted_html = ""
-    # --- FIX APPLIED HERE ---
-    # The min/max normalization has been removed.
-    # We now check the raw similarity score 'sim' directly against your thresholds.
-    for sentence, sim in zip(sentences, similarities):
-        color = "green" if sim >= 0.75 else "red" if sim < 0.35 else "black"
-        highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
+
+    if unit_scores_map:
+        # --- NEW LOGIC: Use pre-calculated passage scores for consistent coloring ---
+        for sentence in sentences:
+            # Find which passage this sentence belongs to and get its score
+            sentence_score = 0.5 # Default to black if not found
+            for unit_text, score in unit_scores_map.items():
+                if sentence in unit_text:
+                    sentence_score = score
+                    break # Found the passage, stop searching
+            
+            color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
+            highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
+    else:
+        # --- ORIGINAL LOGIC: Fallback for sentence-based analysis ---
+        sentence_embeddings = get_embeddings(sentences, local_model_instance)
+        query_embedding = get_embeddings([query_text], local_model_instance)
+        if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings.</p>"
         
+        query_embedding = query_embedding[0].reshape(1, -1)
+        similarities = cosine_similarity(sentence_embeddings, query_embedding).flatten()
+        if not similarities.size: return "<p>No similarity scores.</p>"
+        
+        for sentence, sim in zip(sentences, similarities):
+            color = "green" if sim >= 0.75 else "red" if sim < 0.35 else "black"
+            highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
+            
     return highlighted_html
 
 # --- FULLY RESTORED: Your original synthetic query function ---
@@ -457,8 +473,17 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 query_display_name = selected_query.replace("Initial: ", "(I) ")[:30] + "..."
                 if st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{key_base}_{query_idx}"):
                     with st.spinner("Highlighting..."):
-                        actual_query = selected_query.replace("Initial: ", "")
-                        st.markdown(get_highlighted_sentence_html(p_data["page_text_for_highlight"], actual_query, local_model_instance_for_display), unsafe_allow_html=True)
+                        # --- CORRECTED CALL TO HIGHLIGHTING FUNCTION ---
+                        unit_scores_for_query = None
+                        if st.session_state.last_analysis_granularity.startswith("Passage"):
+                            unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
+
+                        st.markdown(get_highlighted_sentence_html(
+                            p_data["page_text_for_highlight"], 
+                            selected_query.replace("Initial: ", ""),
+                            local_model_instance_for_display,
+                            unit_scores_map=unit_scores_for_query
+                        ), unsafe_allow_html=True)
                 
                 if st.checkbox(f"Show top/bottom {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{key_base}_{query_idx}"):
                     n_val = st.slider("N:", 1, 10, 3, key=f"sl_tb_{key_base}_{query_idx}")
