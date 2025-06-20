@@ -16,7 +16,6 @@ import trafilatura
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
-import openai
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -53,91 +52,16 @@ def enforce_rate_limit():
     if elapsed < REQUEST_INTERVAL: time.sleep(REQUEST_INTERVAL - elapsed)
     last_request_time = time.time()
 
-# --- Embedding Provider Selection & API Key UI ---
-st.sidebar.subheader("🤖 Embedding Provider")
-embedding_provider = st.sidebar.selectbox(
-    "Embedding Provider:",
-    options=["Sentence Transformers (local)", "OpenAI API", "Gemini API"],
-    index=0
-)
-st.session_state.embedding_provider = embedding_provider
-
-if embedding_provider == "OpenAI API":
-    openai_api_key = st.sidebar.text_input("OpenAI API Key:", type="password", value=st.session_state.get("openai_api_key", ""))
-    if openai_api_key:
-        st.session_state.openai_api_key = openai_api_key
-    st.sidebar.info("OpenAI model: `text-embedding-3-small` will be used.")
-elif embedding_provider == "Gemini API":
-    gemini_embed_api_key = st.sidebar.text_input("Gemini API Key (for embeddings):", type="password", value=st.session_state.get("gemini_embed_api_key", ""))
-    if gemini_embed_api_key:
-        st.session_state.gemini_embed_api_key = gemini_embed_api_key
-    st.sidebar.info("Gemini model: `embedding-001` will be used.")
-else:
-    # This is the only place this widget should exist.
-    st.sidebar.subheader("🧠 Embedding Model Configuration")
-    bi_encoder_options = {
-        "MPNet (Quality Focus)": "all-mpnet-base-v2",
-        "MiniLM (Speed Focus)": "all-MiniLM-L6-v2",
-        "DistilRoBERTa (Balanced)": "all-distilroberta-v1"
-    }
-    selected_bi_encoder_label = st.sidebar.selectbox(
-        "Select Bi-Encoder Model:",
-        options=list(bi_encoder_options.keys()),
-        index=0
-    )
-    st.session_state.selected_bi_encoder_model = bi_encoder_options[selected_bi_encoder_label]
-
 @st.cache_resource
-def load_bi_encoder_model():
-    provider = st.session_state.get("embedding_provider", "Sentence Transformers (local)")
-    if provider == "Sentence Transformers (local)":
-        try:
-            bi_encoder_name = st.session_state.get("selected_bi_encoder_model", 'all-mpnet-base-v2')
-            return SentenceTransformer(bi_encoder_name)
-        except Exception as e:
-            st.error(f"Failed to load Bi-Encoder model '{st.session_state.get('selected_bi_encoder_model')}': {e}")
-            return None
-    return None  # For API-based, handled in get_bi_embeddings
-
-def get_bi_embeddings(_texts, bi_encoder_model_instance):
-    provider = st.session_state.get("embedding_provider", "Sentence Transformers (local)")
-    if not _texts:
-        return np.array([])
-    if provider == "Sentence Transformers (local)":
-        if bi_encoder_model_instance is None:
-            return np.array([])
-        return bi_encoder_model_instance.encode(list(_texts) if isinstance(_texts, tuple) else _texts)
-    elif provider == "OpenAI API":
-        api_key = st.session_state.get("openai_api_key")
-        if not api_key:
-            st.error("OpenAI API key required.")
-            return np.array([])
-        try:
-            openai.api_key = api_key
-            model = "text-embedding-3-small"
-            texts = list(_texts) if isinstance(_texts, (list, tuple)) else [_texts]
-            resp = openai.embeddings.create(input=texts, model=model)
-            return np.array([d.embedding for d in resp.data])
-        except Exception as e:
-            st.error(f"OpenAI embedding error: {e}")
-            return np.array([])
-    elif provider == "Gemini API":
-        api_key = st.session_state.get("gemini_embed_api_key")
-        if not api_key:
-            st.error("Gemini API key required for embeddings.")
-            return np.array([])
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("embedding-001")
-            texts = list(_texts) if isinstance(_texts, (list, tuple)) else [_texts]
-            resp = model.embed_content(contents=texts)
-            return np.array([r['embedding'] for r in resp['embeddings']])
-        except Exception as e:
-            st.error(f"Gemini embedding error: {e}")
-            return np.array([])
-    else:
-        st.error("Unknown embedding provider.")
-        return np.array([])
+def load_bi_encoder_model(): # Renamed and simplified
+    # st.write("Loading bi-encoder model...") # Reduced verbosity
+    bi_encoder = None
+    try:
+        bi_encoder_name = st.session_state.get("selected_bi_encoder_model", 'all-mpnet-base-v2')
+        bi_encoder = SentenceTransformer(bi_encoder_name)
+    except Exception as e:
+        st.error(f"Failed to load Bi-Encoder model '{st.session_state.get('selected_bi_encoder_model')}': {e}")
+    return bi_encoder
 
 def initialize_selenium_driver():
     options = ChromeOptions()
@@ -173,26 +97,32 @@ else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 def fetch_content_with_selenium(url, driver_instance):
     if not driver_instance: 
         st.warning(f"Selenium N/A for {url}. Fallback."); 
-        return fetch_content_with_requests(url)
+        return fetch_content_with_requests(url) # Use requests immediately if driver is None
 
     try:
         enforce_rate_limit()
+        # The line below is where the timeout occurs
         driver_instance.get(url) 
-        time.sleep(5)
+        time.sleep(5) # Optional: Add waits for elements if page is dynamic
         return driver_instance.page_source
     except Exception as e:
+        # Catch any exception that occurs during the .get() call or subsequent operations
         st.error(f"Selenium fetch error for {url}: {e}")
+        # Attempt to quit the driver to clean up resources
         try:
             driver_instance.quit()
         except:
+            # Ignore errors if quit() itself fails on a broken instance
             pass
+        # Invalidate the driver instance in session state
         st.session_state.selenium_driver_instance = None
+        # Fallback to requests for this specific URL
         st.warning(f"Selenium failed for {url}. Falling back to requests.")
         try:
             return fetch_content_with_requests(url)
         except Exception as req_e:
             st.error(f"Requests fallback also failed for {url}: {req_e}")
-            return None
+            return None # Both methods failed
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
 
@@ -244,6 +174,13 @@ def split_text_into_passages(text, s_per_p=7, s_overlap=2):
         if chunk.strip() and len(chunk.split()) > 10: passages.append(chunk)
     return [p for p in passages if p.strip()]
 
+def get_bi_embeddings(_texts, bi_encoder_model_instance):
+    if not _texts or bi_encoder_model_instance is None: return np.array([])
+    return bi_encoder_model_instance.encode(list(_texts) if isinstance(_texts, tuple) else _texts)
+
+# Cross-Encoder scoring function REMOVED
+# def get_cross_encoder_scores(...)
+
 def get_ranked_sentences_for_display(page_text_content, query_text, bi_encoder_instance, top_n=5):
     if not page_text_content or not query_text: return [], []
     sentences = split_text_into_sentences(page_text_content)
@@ -274,7 +211,7 @@ def get_highlighted_sentence_html(page_text_content, query_text, bi_encoder_inst
 
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model_name = "gemini-2.5-flash-preview-05-20"
+    model_name = "gemini-2.5-flash-preview-05-20" # Your preferred model, ensure it's correct
     try: model = genai.GenerativeModel(model_name)
     except Exception as e: st.error(f"Gemini model init error ({model_name}): {e}"); return []
     prompt = f"""
@@ -320,14 +257,14 @@ def generate_synthetic_queries(user_query, num_queries=7):
 st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 
-# --- START OF CODE BLOCK TO REMOVE ---
-# This entire block is a duplicate of the one inside the embedding provider selection logic above.
-# st.sidebar.subheader("🤖 Embedding Model Configuration")
-# bi_encoder_options = {"MPNet (Quality Focus)": "all-mpnet-base-v2", "MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "DistilRoBERTa (Balanced)": "all-distilroberta-v1"}
-# selected_bi_encoder_label = st.sidebar.selectbox("Select Bi-Encoder Model:", options=list(bi_encoder_options.keys()), index=0)
-# st.session_state.selected_bi_encoder_model = bi_encoder_options[selected_bi_encoder_label]
-# --- END OF CODE BLOCK TO REMOVE ---
+st.sidebar.subheader("🤖 Embedding Model Configuration")
+bi_encoder_options = {"MPNet (Quality Focus)": "all-mpnet-base-v2", "MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "DistilRoBERTa (Balanced)": "all-distilroberta-v1"}
+selected_bi_encoder_label = st.sidebar.selectbox("Select Bi-Encoder Model:", options=list(bi_encoder_options.keys()), index=0)
+st.session_state.selected_bi_encoder_model = bi_encoder_options[selected_bi_encoder_label]
 
+# Cross-Encoder UI elements REMOVED
+# use_cross_encoder_rerank = st.sidebar.checkbox(...)
+# if use_cross_encoder_rerank: ...
 
 st.sidebar.subheader("📄 Text Extraction & Processing")
 use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura for Main Content Extraction", value=True)
@@ -338,9 +275,9 @@ use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching", value=True)
 st.sidebar.divider()
 st.sidebar.header("⚙️ Query & URL Configuration")
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
-urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "https://vercel.com/blog/react-server-components\nhttps://www.patterns.dev/posts/react-server-components", height=100)
+urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "URL 1\nURL2", height=100)
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", min_value=3, max_value=50, value=5)
-s_per_p_val_default = 4
+s_per_p_val_default = 7
 s_overlap_val_default = 2
 if analysis_granularity == "Passage-based (Groups of sentences)":
     st.sidebar.subheader("Passage Settings:")
@@ -353,11 +290,9 @@ analyze_disabled = not st.session_state.get("gemini_api_configured", False)
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_disabled):
     if not initial_query_val or not urls_text_area_val: st.warning("Need initial query and URLs."); st.stop()
 
-    with st.spinner("Loading embedding model..."):
-        embedding_model_instance = load_bi_encoder_model()
-    # Check if a model was loaded, especially for the local Sentence Transformer case
-    if st.session_state.get("embedding_provider") == "Sentence Transformers (local)" and embedding_model_instance is None:
-        st.error("Bi-Encoder model failed to load. Cannot proceed."); st.stop()
+    with st.spinner("Loading bi-encoder model..."): # Simplified spinner message
+        embedding_model_instance = load_bi_encoder_model() # Only bi-encoder needed now
+    if embedding_model_instance is None: st.error("Bi-Encoder model failed. Cannot proceed."); st.stop()
 
     st.session_state.all_url_metrics_list = []
     st.session_state.url_processed_units_dict = {}
@@ -405,6 +340,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 if text: processed_units = [text]
                 else:
                     for sq_idx, query_text in enumerate(local_all_queries):
+                        # Removed ReRanked Max Sim from this default append
                         local_all_metrics.append({"URL":url,"Query":query_text,"Overall Similarity (Weighted)":0.0,"Max Unit Sim. (Bi-Enc)":0.0,"Avg. Unit Sim. (Bi-Enc)":0.0, "Num Units":0})
                     continue 
             else:
@@ -417,6 +353,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                     processed_units = [text]
             
             unit_embeddings = get_bi_embeddings(processed_units, embedding_model_instance)
+            # Removed "reranked_scores": {} from here as it's no longer used
             local_processed_units_data[url] = {"units":processed_units, "embeddings":unit_embeddings, "unit_similarities":None, "page_text_for_highlight": text}
 
             if unit_embeddings.size > 0:
@@ -443,16 +380,20 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                     max_s_bi = np.max(current_q_unit_bi_sims) if current_q_unit_bi_sims.size > 0 else 0.0
                     avg_s_bi = np.mean(current_q_unit_bi_sims) if current_q_unit_bi_sims.size > 0 else 0.0
                     
+                    # Cross-encoder section REMOVED
+                    
                     local_all_metrics.append({
                         "URL":url,"Query":query_text,
                         "Overall Similarity (Weighted)":overall_sims[sq_idx],
                         "Max Unit Sim. (Bi-Enc)":max_s_bi,
                         "Avg. Unit Sim. (Bi-Enc)":avg_s_bi,
+                        # "ReRanked Max Sim. (Cross-Enc)" column REMOVED
                         "Num Units":len(processed_units)
                     })
             else:
                 st.warning(f"No text unit embeddings for {url}.")
                 for sq_idx, query_text in enumerate(local_all_queries):
+                    # Removed ReRanked Max Sim from this default append
                     local_all_metrics.append({"URL":url,"Query":query_text,"Overall Similarity (Weighted)":0.0,"Max Unit Sim. (Bi-Enc)":0.0,"Avg. Unit Sim. (Bi-Enc)":0.0, "Num Units":0})
     
     if local_all_metrics:
@@ -474,17 +415,19 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     
     st.markdown("---"); st.subheader(f"📈 Overall Similarity & {unit_label} Metrics Summary")
     df_summary = pd.DataFrame(st.session_state.all_url_metrics_list)
+    # Update column names for display, removing cross-encoder column
     summary_cols_display = ['URL', 'Query', 'Overall Similarity (Weighted)', f'Max {unit_label} Sim. (Bi-Enc)', f'Avg. {unit_label} Sim. (Bi-Enc)', f'Num {unit_label}s']
     df_summary_display = df_summary.rename(columns={
         "Max Unit Sim. (Bi-Enc)": f"Max {unit_label} Sim. (Bi-Enc)", 
-        "Avg. Unit Sim. (Bi-Enc)": f"Avg {unit_label} Sim. (Bi-Enc)",
+        "Avg. Unit Sim. (Bi-Enc)": f"Avg. {unit_label} Sim. (Bi-Enc)",
         "Num Units": f"Num {unit_label}s"
     })
     df_to_show_in_table = df_summary_display.reindex(columns=summary_cols_display, fill_value="N/A") 
     st.dataframe(df_to_show_in_table.style.format({
         "Overall Similarity (Weighted)":"{:.3f}",
         f"Max {unit_label} Sim. (Bi-Enc)":"{:.3f}",
-        f"Avg {unit_label} Sim. (Bi-Enc)":"{:.3f}",
+        f"Avg. {unit_label} Sim. (Bi-Enc)":"{:.3f}",
+        # Formatting for ReRanked Max Sim. removed
     }), use_container_width=True, height=(min(len(df_summary)*38+38,700)))
     
     st.markdown("---"); st.subheader("📊 Visual: Overall URL vs. All Queries Similarity (Weighted)")
@@ -496,12 +439,13 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps (Bi-Encoder Scores) vs. All Queries")
     if st.session_state.url_processed_units_dict and st.session_state.all_queries_for_analysis:
-        bi_encoder_for_display = load_bi_encoder_model()
+        bi_encoder_for_display = load_bi_encoder_model() # Only need bi-encoder for display
 
         for url_idx, (url, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
             with st.expander(f"Heatmap & Details for: {url}", expanded=(url_idx==0)):
                 units, unit_bi_sims = p_data["units"], p_data.get("unit_similarities")
                 page_full_text = p_data.get("page_text_for_highlight", "")
+                # reranked_scores_for_url removed
 
                 if unit_bi_sims is None or unit_bi_sims.size==0: st.write(f"No {unit_label.lower()} similarity data."); continue
                 
@@ -523,6 +467,7 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     if page_full_text and st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:10].replace(' ','_')}"):
                         with st.spinner("Highlighting..."): 
                             actual_query_text = selected_query_for_detail.replace("Initial: ", "")
+                            # Pass the loaded bi_encoder_for_display (which is the embedding_model instance)
                             st.markdown(get_highlighted_sentence_html(page_full_text, actual_query_text, bi_encoder_for_display), unsafe_allow_html=True)
                     
                     if st.checkbox(f"Show top/bottom N {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{url_idx}_{url.replace('/', '_')}_{selected_query_for_detail[:10].replace(' ','_')}"):
@@ -537,6 +482,8 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                         st.markdown(f"**Bi-Encoder Bottom {n_val} {unit_label}s:**")
                         for u_t, u_s in scored_units_bi[-n_val:]: st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
 
+                        # Cross-Encoder display section REMOVED
+                        # if use_cross_encoder_rerank and selected_query_for_detail in reranked_scores_for_url: ...
 
 elif st.session_state.get("analysis_done"):
     st.info("Analysis complete, but no data to display. Check inputs or logs.")
