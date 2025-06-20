@@ -244,7 +244,7 @@ def get_highlighted_sentence_html(page_text_content, query_text, local_model_ins
 # --- FULLY RESTORED: Your original synthetic query function ---
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model = genai.GenerativeModel("gemini-1.5-flash-latest")
+    model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique.
@@ -314,7 +314,7 @@ urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "https:/
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", min_value=3, max_value=50, value=5)
 if analysis_granularity == "Passage-based (Groups of sentences)":
     st.sidebar.subheader("Passage Settings:")
-    s_per_p_val = st.sidebar.slider("Sentences/Passage:", 2, 20, 7)
+    s_per_p_val = st.sidebar.slider("Sentences/Passage:", 2, 20, 4)
     s_overlap_val = st.sidebar.slider("Sentence Overlap:", 0, 10, 2)
 else: s_per_p_val = 1; s_overlap_val = 0
 
@@ -468,4 +468,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]: st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.0 (Final & Corrected)")
+st.sidebar.info("Query Fan-Out Analyzer | v5.0 | Gemini + OpenAI")
