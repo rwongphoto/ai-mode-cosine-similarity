@@ -421,11 +421,27 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
         with st.expander(f"Heatmap & Details for: {url}", expanded=(url_idx==0)):
             if p_data.get("unit_similarities") is None: st.write(f"No {unit_label.lower()} similarity data."); continue
             
-            unit_sims = p_data["unit_similarities"]
-            short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in st.session_state.all_queries_for_analysis]
-            unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(p_data["units"]))]
+            unit_sims, units = p_data["unit_similarities"], p_data["units"]
+            all_queries = st.session_state.all_queries_for_analysis
+            short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
+            unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
             
-            fig_heat = go.Figure(data=go.Heatmap(z=unit_sims.T, x=unit_labels, y=short_queries, colorscale='Viridis', zmin=0, zmax=1))
+            # --- FIX IS HERE: HOVER TEXT LOGIC RESTORED ---
+            hover_text = [[f"<b>{unit_label[0]}{i+1}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr>Text:{units[i][:120]}..."
+                           for i in range(unit_sims.shape[0])]
+                          for j in range(unit_sims.shape[1])]
+
+            fig_heat = go.Figure(data=go.Heatmap(
+                z=unit_sims.T, 
+                x=unit_labels, 
+                y=short_queries, 
+                colorscale='Viridis', 
+                zmin=0, 
+                zmax=1,
+                text=hover_text,
+                hoverinfo='text'
+            ))
+            
             fig_heat.update_layout(title=f"{unit_label} Similarity for {url}", height=max(400, 40 * len(short_queries) + 100), yaxis_autorange='reversed')
             st.plotly_chart(fig_heat, use_container_width=True)
             
