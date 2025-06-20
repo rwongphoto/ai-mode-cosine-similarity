@@ -230,7 +230,7 @@ def get_highlighted_sentence_html(page_text_content, query_text, local_model_ins
     highlighted_html = ""
     for sentence, sim in zip(sentences, similarities):
         norm_sim = (sim - min_sim) / (max_sim - min_sim) if max_sim > min_sim else 0.5
-        color = "green" if norm_sim >= 0.75 else "red" if norm_sim < 0.35 else "black"
+        color = "green" if norm_sim >= 0.75 else "black" if norm_sim < 0.35 else "red"
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     return highlighted_html
 
