@@ -220,18 +220,25 @@ def get_highlighted_sentence_html(page_text_content, query_text, local_model_ins
     if not page_text_content or not query_text: return ""
     sentences = split_text_into_sentences(page_text_content)
     if not sentences: return "<p>No sentences to highlight.</p>"
+    
     sentence_embeddings = get_embeddings(sentences, local_model_instance)
     query_embedding = get_embeddings([query_text], local_model_instance)
+    
     if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings.</p>"
+    
     query_embedding = query_embedding[0].reshape(1, -1)
     similarities = cosine_similarity(sentence_embeddings, query_embedding).flatten()
+    
     if not similarities.size: return "<p>No similarity scores.</p>"
-    min_sim, max_sim = np.min(similarities), np.max(similarities)
+    
     highlighted_html = ""
+    # --- FIX APPLIED HERE ---
+    # The min/max normalization has been removed.
+    # We now check the raw similarity score 'sim' directly against your thresholds.
     for sentence, sim in zip(sentences, similarities):
-        norm_sim = (sim - min_sim) / (max_sim - min_sim) if max_sim > min_sim else 0.5
-        color = "green" if norm_sim >= 0.75 else "black" if norm_sim < 0.35 else "red"
+        color = "green" if sim >= 0.75 else "red" if sim < 0.35 else "black"
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
+        
     return highlighted_html
 
 # --- FULLY RESTORED: Your original synthetic query function ---
