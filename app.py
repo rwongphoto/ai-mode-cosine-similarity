@@ -66,10 +66,25 @@ if embedding_provider == "OpenAI API":
     openai_api_key = st.sidebar.text_input("OpenAI API Key:", type="password", value=st.session_state.get("openai_api_key", ""))
     if openai_api_key:
         st.session_state.openai_api_key = openai_api_key
+    st.sidebar.info("OpenAI model: `text-embedding-3-small` will be used.")
 elif embedding_provider == "Gemini API":
     gemini_embed_api_key = st.sidebar.text_input("Gemini API Key (for embeddings):", type="password", value=st.session_state.get("gemini_embed_api_key", ""))
     if gemini_embed_api_key:
         st.session_state.gemini_embed_api_key = gemini_embed_api_key
+    st.sidebar.info("Gemini model: `embedding-001` will be used.")
+else:
+    st.sidebar.subheader("🧠 Embedding Model Configuration")
+    bi_encoder_options = {
+        "MPNet (Quality Focus)": "all-mpnet-base-v2",
+        "MiniLM (Speed Focus)": "all-MiniLM-L6-v2",
+        "DistilRoBERTa (Balanced)": "all-distilroberta-v1"
+    }
+    selected_bi_encoder_label = st.sidebar.selectbox(
+        "Select Bi-Encoder Model:",
+        options=list(bi_encoder_options.keys()),
+        index=0
+    )
+    st.session_state.selected_bi_encoder_model = bi_encoder_options[selected_bi_encoder_label]
 
 @st.cache_resource
 def load_bi_encoder_model():
