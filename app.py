@@ -16,6 +16,7 @@ import trafilatura
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+import openai
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -52,16 +53,76 @@ def enforce_rate_limit():
     if elapsed < REQUEST_INTERVAL: time.sleep(REQUEST_INTERVAL - elapsed)
     last_request_time = time.time()
 
+# --- Embedding Provider Selection & API Key UI ---
+st.sidebar.subheader("🤖 Embedding Provider")
+embedding_provider = st.sidebar.selectbox(
+    "Embedding Provider:",
+    options=["Sentence Transformers (local)", "OpenAI API", "Gemini API"],
+    index=0
+)
+st.session_state.embedding_provider = embedding_provider
+
+if embedding_provider == "OpenAI API":
+    openai_api_key = st.sidebar.text_input("OpenAI API Key:", type="password", value=st.session_state.get("openai_api_key", ""))
+    if openai_api_key:
+        st.session_state.openai_api_key = openai_api_key
+elif embedding_provider == "Gemini API":
+    gemini_embed_api_key = st.sidebar.text_input("Gemini API Key (for embeddings):", type="password", value=st.session_state.get("gemini_embed_api_key", ""))
+    if gemini_embed_api_key:
+        st.session_state.gemini_embed_api_key = gemini_embed_api_key
+
 @st.cache_resource
-def load_bi_encoder_model(): # Renamed and simplified
-    # st.write("Loading bi-encoder model...") # Reduced verbosity
-    bi_encoder = None
-    try:
-        bi_encoder_name = st.session_state.get("selected_bi_encoder_model", 'all-mpnet-base-v2')
-        bi_encoder = SentenceTransformer(bi_encoder_name)
-    except Exception as e:
-        st.error(f"Failed to load Bi-Encoder model '{st.session_state.get('selected_bi_encoder_model')}': {e}")
-    return bi_encoder
+def load_bi_encoder_model():
+    provider = st.session_state.get("embedding_provider", "Sentence Transformers (local)")
+    if provider == "Sentence Transformers (local)":
+        try:
+            bi_encoder_name = st.session_state.get("selected_bi_encoder_model", 'all-mpnet-base-v2')
+            return SentenceTransformer(bi_encoder_name)
+        except Exception as e:
+            st.error(f"Failed to load Bi-Encoder model '{st.session_state.get('selected_bi_encoder_model')}': {e}")
+            return None
+    return None  # For API-based, handled in get_bi_embeddings
+
+def get_bi_embeddings(_texts, bi_encoder_model_instance):
+    provider = st.session_state.get("embedding_provider", "Sentence Transformers (local)")
+    if not _texts:
+        return np.array([])
+    if provider == "Sentence Transformers (local)":
+        if bi_encoder_model_instance is None:
+            return np.array([])
+        return bi_encoder_model_instance.encode(list(_texts) if isinstance(_texts, tuple) else _texts)
+    elif provider == "OpenAI API":
+        api_key = st.session_state.get("openai_api_key")
+        if not api_key:
+            st.error("OpenAI API key required.")
+            return np.array([])
+        try:
+            openai.api_key = api_key
+            model = "text-embedding-3-small"  # Or your preferred model
+            texts = list(_texts) if isinstance(_texts, (list, tuple)) else [_texts]
+            resp = openai.embeddings.create(input=texts, model=model)
+            return np.array([d.embedding for d in resp.data])
+        except Exception as e:
+            st.error(f"OpenAI embedding error: {e}")
+            return np.array([])
+    elif provider == "Gemini API":
+        api_key = st.session_state.get("gemini_embed_api_key")
+        if not api_key:
+            st.error("Gemini API key required for embeddings.")
+            return np.array([])
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("embedding-001")  # Update to correct Gemini embedding model name if needed
+            texts = list(_texts) if isinstance(_texts, (list, tuple)) else [_texts]
+            resp = model.embed_content(contents=texts)
+            # The API response structure may differ; adjust as needed
+            return np.array([r['embedding'] for r in resp['embeddings']])
+        except Exception as e:
+            st.error(f"Gemini embedding error: {e}")
+            return np.array([])
+    else:
+        st.error("Unknown embedding provider.")
+        return np.array([])
 
 def initialize_selenium_driver():
     options = ChromeOptions()
