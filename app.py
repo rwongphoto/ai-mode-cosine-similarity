@@ -469,9 +469,16 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
             
-            hover_text = [[f"<b>{unit_label[0]}{i+1}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr>Text:{units[i][:120]}..."
-                           for i in range(unit_sims.shape[0])]
-                          for j in range(unit_sims.shape[1])]
+            hover_text = []
+            for i in range(unit_sims.shape[0]):  # Iterate over units (rows)
+                row_texts = []
+                for j in range(unit_sims.shape[1]):  # Iterate over queries (columns)
+                    row_texts.append(
+                        f"<b>{unit_labels[i]}</b> vs Q:'{all_queries[j][:45]}...'<br>"
+                        f"Similarity: {unit_sims[i, j]:.3f}<hr>"
+                        f"Text: {units[i][:120]}..."
+                    )
+                hover_text.append(row_texts)
 
             fig_heat = go.Figure(data=go.Heatmap(
                 z=unit_sims.T, 
@@ -483,8 +490,14 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 text=hover_text,
                 hoverinfo='text'
             ))
-            
-            fig_heat.update_layout(title=f"{unit_label} Similarity for {url}", height=max(400, 40 * len(short_queries) + 100), yaxis_autorange='reversed')
+
+            # Adjust layout for the new orientation
+            fig_heat.update_layout(
+                title=f"{unit_label} Similarity for {identifier}",
+                height=max(400, 25 * len(unit_labels) + 100), # Adjust height based on number of units
+                xaxis_title="Query",
+                yaxis_title=unit_label
+            )
             st.plotly_chart(fig_heat, use_container_width=True)
             
             st.markdown("---")
