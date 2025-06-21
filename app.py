@@ -217,50 +217,33 @@ def split_text_into_passages(text, s_per_p=7, s_overlap=2):
     return [p for p in passages if p.strip()]
 
 def get_highlighted_sentence_html(page_text_content, query_text, local_model_instance=None, unit_scores_map=None):
-    """
-    Highlights sentences based on scores.
-    If unit_scores_map is provided (from a passage-based analysis), it colors all sentences
-    in a passage with that passage's score for consistency with the heatmap.
-    Otherwise, it calculates scores sentence-by-sentence.
-    """
     if not page_text_content or not query_text: return ""
     sentences = split_text_into_sentences(page_text_content)
     if not sentences: return "<p>No sentences to highlight.</p>"
-
     highlighted_html = ""
-
     if unit_scores_map:
-        # --- NEW LOGIC: Use pre-calculated passage scores for consistent coloring ---
         for sentence in sentences:
-            # Find which passage this sentence belongs to and get its score
-            sentence_score = 0.5 # Default to black if not found
+            sentence_score = 0.5
             for unit_text, score in unit_scores_map.items():
                 if sentence in unit_text:
-                    sentence_score = score
-                    break # Found the passage, stop searching
-            
+                    sentence_score = score; break
             color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
             highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     else:
-        # --- ORIGINAL LOGIC: Fallback for sentence-based analysis ---
         sentence_embeddings = get_embeddings(sentences, local_model_instance)
         query_embedding = get_embeddings([query_text], local_model_instance)
         if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings.</p>"
-        
         query_embedding = query_embedding[0].reshape(1, -1)
         similarities = cosine_similarity(sentence_embeddings, query_embedding).flatten()
         if not similarities.size: return "<p>No similarity scores.</p>"
-        
         for sentence, sim in zip(sentences, similarities):
             color = "green" if sim >= 0.75 else "red" if sim < 0.35 else "black"
             highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
-            
     return highlighted_html
 
-# --- FULLY RESTORED: Your original synthetic query function ---
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
+    model = genai.GenerativeModel("gemini-1.5-flash-latest")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique.
@@ -305,7 +288,6 @@ st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 
 st.sidebar.subheader("🤖 Embedding Model Configuration")
-# --- UPDATED: Unified Model Selector ---
 embedding_model_options = {
     "Local: MPNet (Quality Focus)": "all-mpnet-base-v2",
     "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2",
@@ -318,15 +300,29 @@ selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", optio
 st.session_state.selected_embedding_model = embedding_model_options[selected_embedding_label]
 
 st.sidebar.subheader("📄 Text Extraction & Processing")
-use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura for Main Content Extraction", value=True)
-st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall (more text, less precise)", value=False)
 analysis_granularity = st.sidebar.selectbox("Analysis Granularity:", ("Passage-based (Groups of sentences)", "Sentence-based (Individual sentences)"), index=0)
-use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching", value=True)
+use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching (for URL mode)", value=True)
 
 st.sidebar.divider()
-st.sidebar.header("⚙️ Query & URL Configuration")
+st.sidebar.header("⚙️ Input & Query Configuration")
+
+# --- NEW: Input Mode Selection ---
+input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"))
+
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
-urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "https://vercel.com/blog/understanding-rendering-in-react\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
+
+# --- NEW: Conditional Input Fields ---
+if input_mode == "Fetch from URLs":
+    urls_text_area_val = st.sidebar.text_area("Enter URLs (one per line):", "https://vercel.com/blog/understanding-rendering-in-react\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
+    use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura for Main Content Extraction", value=True)
+    st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall (more text, less precise)", value=False)
+else: # "Paste Raw Text"
+    pasted_content_label = st.sidebar.text_input("Content Label (a unique name for this text):", value="My Pasted Content")
+    pasted_content_text = st.sidebar.text_area("Paste your content here:", height=200, placeholder="Paste a long article or document here for analysis.")
+    # Set defaults for options not applicable to paste mode
+    urls_text_area_val = ""
+    use_trafilatura_opt = False
+
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", min_value=3, max_value=50, value=5)
 if analysis_granularity == "Passage-based (Groups of sentences)":
     st.sidebar.subheader("Passage Settings:")
@@ -337,8 +333,29 @@ else: s_per_p_val = 1; s_overlap_val = 0
 analyze_disabled = not st.session_state.get("gemini_api_configured", False)
 
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_disabled):
-    if not initial_query_val or not urls_text_area_val: st.warning("Need initial query and URLs."); st.stop()
+    # --- NEW: Unified Input Validation and Job Creation ---
+    jobs = []
+    if not initial_query_val:
+        st.warning("An Initial Search Query is required for analysis.")
+        st.stop()
 
+    if input_mode == "Fetch from URLs":
+        if not urls_text_area_val:
+            st.warning("Please enter at least one URL to fetch.")
+            st.stop()
+        local_urls = [url.strip() for url in urls_text_area_val.split('\n') if url.strip()]
+        for url in local_urls:
+            jobs.append({'type': 'url', 'identifier': url})
+    else: # "Paste Raw Text"
+        if not pasted_content_text:
+            st.warning("Please paste content into the text area to analyze.")
+            st.stop()
+        if not pasted_content_label:
+            st.warning("Please provide a label for your pasted content.")
+            st.stop()
+        jobs.append({'type': 'paste', 'identifier': pasted_content_label, 'content': pasted_content_text})
+
+    # --- Model Loading & API Checks (largely unchanged) ---
     local_embedding_model_instance = None
     model_choice = st.session_state.selected_embedding_model
     if not model_choice.startswith(("openai-", "gemini-")):
@@ -349,40 +366,45 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
         if model_choice.startswith("openai-") and not st.session_state.openai_api_configured: st.error("OpenAI API not configured."); st.stop()
         if model_choice.startswith("gemini-") and not st.session_state.gemini_api_configured: st.error("Gemini API not configured."); st.stop()
 
-    # Reset state variables as in original
     st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
     st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
 
-    if use_selenium_opt and st.session_state.get("selenium_driver_instance") is None:
+    if use_selenium_opt and input_mode == "Fetch from URLs" and st.session_state.get("selenium_driver_instance") is None:
         with st.spinner("Initializing Selenium WebDriver..."):
             st.session_state.selenium_driver_instance = initialize_selenium_driver()
 
-    local_urls = [url.strip() for url in urls_text_area_val.split('\n') if url.strip()]
-    
+    # --- Query Generation & Embedding (unchanged) ---
     synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
     local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
-    
-    # --- UPDATED to use master embedding function ---
     local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
     initial_query_embedding = get_embeddings([initial_query_val], local_embedding_model_instance)[0]
 
     local_all_metrics, local_processed_units_data = [], {}
 
-    with st.spinner(f"Processing {len(local_urls)} URLs..."):
-        for i, url in enumerate(local_urls):
-            st.markdown(f"--- \n#### Processing URL {i+1}: {url}")
-            html = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(url)
-            text = parse_and_clean_html(html, url, use_trafilatura=use_trafilatura_opt)
+    # --- NEW: Unified Processing Loop ---
+    with st.spinner(f"Processing {len(jobs)} content source(s)..."):
+        for i, job in enumerate(jobs):
+            identifier = job['identifier']
+            st.markdown(f"--- \n#### Processing Source {i+1}: {identifier}")
+            
+            text = None
+            if job['type'] == 'url':
+                html = fetch_content_with_selenium(identifier, st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(identifier)
+                text = parse_and_clean_html(html, identifier, use_trafilatura=use_trafilatura_opt)
+            elif job['type'] == 'paste':
+                text = job['content'] # Use the pasted content directly
             
             if not text or len(text.strip()) < 20:
-                st.warning(f"Insufficient text from {url}."); continue
+                st.warning(f"Insufficient text from {identifier}. Skipping."); continue
 
+            # --- Analysis logic is now generic and works for both inputs ---
             processed_units = (split_text_into_passages(text, s_per_p_val, s_overlap_val) if analysis_granularity.startswith("Passage") 
                                else split_text_into_sentences(text))
             if not processed_units: processed_units = [text]
             
             unit_embeddings = get_embeddings(processed_units, local_embedding_model_instance)
-            local_processed_units_data[url] = {"units":processed_units, "embeddings":unit_embeddings, "unit_similarities":None, "page_text_for_highlight": text}
+            # Store the full text for highlighting later
+            local_processed_units_data[identifier] = {"units":processed_units, "embeddings":unit_embeddings, "unit_similarities":None, "page_text_for_highlight": text}
 
             if unit_embeddings.size > 0:
                 unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
@@ -391,12 +413,13 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
 
                 overall_sims = cosine_similarity(weighted_overall_url_emb, local_all_query_embs)[0]
                 unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
-                local_processed_units_data[url]["unit_similarities"] = unit_q_sims
+                local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
 
                 for sq_idx, query_text in enumerate(local_all_queries):
                     current_q_unit_sims = unit_q_sims[:, sq_idx]
                     local_all_metrics.append({
-                        "URL":url, "Query":query_text,
+                        "URL": identifier, # This key now holds URL or Content Label
+                        "Query":query_text,
                         "Overall Similarity (Weighted)": overall_sims[sq_idx],
                         "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
                         "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
@@ -410,7 +433,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
         st.session_state.analysis_done = True
         st.session_state.last_analysis_granularity = analysis_granularity
 
-# --- Display Results (Restored original structure) ---
+# --- Display Results (Modified for clarity) ---
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
     st.subheader("Analysed Queries (Initial + Synthetic)")
     st.expander("View All Analysed Queries").json([q.replace("Initial: ", "(Initial) ") for q in st.session_state.all_queries_for_analysis])
@@ -419,13 +442,16 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     
     st.markdown("---"); st.subheader(f"📈 Overall Similarity & {unit_label} Metrics Summary")
     df_summary = pd.DataFrame(st.session_state.all_url_metrics_list)
+    # --- UPDATED: Rename column for better clarity ---
     df_display = df_summary.rename(columns={
+        "URL": "Source / URL",
         "Max Unit Sim.": f"Max {unit_label} Sim.", "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", "Num Units": f"Num {unit_label}s"
     })
     st.dataframe(df_display.style.format("{:.3f}", subset=["Overall Similarity (Weighted)", f"Max {unit_label} Sim.", f"Avg. {unit_label} Sim."]), use_container_width=True)
     
-    st.markdown("---"); st.subheader("📊 Visual: Overall URL vs. All Queries Similarity (Weighted)")
-    fig_bar = px.bar(df_display, x="Query", y="Overall Similarity (Weighted)", color="URL", barmode="group", title="Overall Page Similarity to Queries", height=max(600, 80 * len(st.session_state.all_queries_for_analysis)))
+    st.markdown("---"); st.subheader("📊 Visual: Overall Similarity to All Queries (Weighted)")
+    # --- UPDATED: Use new column name in chart ---
+    fig_bar = px.bar(df_display, x="Query", y="Overall Similarity (Weighted)", color="Source / URL", barmode="group", title="Overall Content Similarity to Queries", height=max(600, 80 * len(st.session_state.all_queries_for_analysis)))
     fig_bar.update_yaxes(range=[0,1]); st.plotly_chart(fig_bar, use_container_width=True)
     
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. All Queries")
@@ -433,8 +459,9 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     if not st.session_state.selected_embedding_model.startswith(('openai-', 'gemini-')):
         local_model_instance_for_display = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
 
-    for url_idx, (url, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
-        with st.expander(f"Heatmap & Details for: {url}", expanded=(url_idx==0)):
+    # --- UPDATED: Loop now uses generic 'identifier' ---
+    for item_idx, (identifier, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
+        with st.expander(f"Heatmap & Details for: {identifier}", expanded=(item_idx==0)):
             if p_data.get("unit_similarities") is None: st.write(f"No {unit_label.lower()} similarity data."); continue
             
             unit_sims, units = p_data["unit_similarities"], p_data["units"]
@@ -442,28 +469,19 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
             
-            # --- FIX IS HERE: HOVER TEXT LOGIC RESTORED ---
             hover_text = [[f"<b>{unit_label[0]}{i+1}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr>Text:{units[i][:120]}..."
-                           for i in range(unit_sims.shape[0])]
-                          for j in range(unit_sims.shape[1])]
+                           for j in range(unit_sims.shape[1])]
+                          for i in range(unit_sims.shape[0])]
 
             fig_heat = go.Figure(data=go.Heatmap(
-                z=unit_sims.T, 
-                x=unit_labels, 
-                y=short_queries, 
-                colorscale='Viridis', 
-                zmin=0, 
-                zmax=1,
-                text=hover_text,
-                hoverinfo='text'
+                z=unit_sims.T, x=unit_labels, y=short_queries, colorscale='Viridis', zmin=0, zmax=1, text=hover_text, hoverinfo='text'
             ))
             
-            fig_heat.update_layout(title=f"{unit_label} Similarity for {url}", height=max(400, 40 * len(short_queries) + 100), yaxis_autorange='reversed')
+            fig_heat.update_layout(title=f"{unit_label} Similarity for {identifier}", height=max(400, 40 * len(short_queries) + 100), yaxis_autorange='reversed')
             st.plotly_chart(fig_heat, use_container_width=True)
             
             st.markdown("---")
-            # Restored original unique keys for widgets
-            key_base = f"{url_idx}_{url.replace('/', '_')}"
+            key_base = f"{item_idx}_{identifier.replace('/', '_').replace(' ', '_')}" # make key more robust
             selected_query = st.selectbox(f"Select Query for Details:", options=st.session_state.all_queries_for_analysis, key=f"q_sel_{key_base}")
             
             if selected_query:
@@ -473,7 +491,6 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 query_display_name = selected_query.replace("Initial: ", "(I) ")[:30] + "..."
                 if st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{key_base}_{query_idx}"):
                     with st.spinner("Highlighting..."):
-                        # --- CORRECTED CALL TO HIGHLIGHTING FUNCTION ---
                         unit_scores_for_query = None
                         if st.session_state.last_analysis_granularity.startswith("Passage"):
                             unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
@@ -493,4 +510,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]: st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.0 | Gemini + OpenAI")
+st.sidebar.info("Query Fan-Out Analyzer | v5.1 | Gemini + OpenAI + Paste")
