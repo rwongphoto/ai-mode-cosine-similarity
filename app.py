@@ -489,7 +489,8 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 title=f"{unit_label} Similarity for {identifier}",
                 height=max(400, 25 * len(unit_labels) + 100), # Adjust height based on number of units
                 xaxis_title="Query",
-                yaxis_title=unit_label
+                yaxis_title=unit_label,
+                yaxis_autorange='reversed'
             )
             st.plotly_chart(fig_heat, use_container_width=True)
             
