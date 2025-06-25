@@ -153,7 +153,7 @@ def split_text_into_sentences(text):
 def extract_structural_passages_with_full_text(html_content):
     if not html_content: return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
-    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog']):
+    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']):
         if el.name: el.decompose()
     selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
     for sel in selectors:
@@ -194,30 +194,42 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
 
-# --- UPDATED: Highlighting function now cleans media tags first ---
-def get_passage_highlighted_html(html_content, unit_scores_map):
+# --- NEW, SAFER HIGHLIGHTING FUNCTION ---
+def render_safe_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # KEY CHANGE: Clean the HTML of non-textual elements BEFORE processing for highlighting
-    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'menu', 'banner', 'dialog']):
-        if el.name: el.decompose()
-    # Explicitly remove common media tags
-    for media_tag in soup.find_all(['img', 'svg', 'video', 'audio', 'canvas', 'figure', 'figcaption']):
-        media_tag.decompose()
-        
+    # First, a thorough cleaning of all potentially harmful or display-breaking tags
+    tags_to_remove = ["script", "style", "noscript", "iframe", "link", "meta", "button", "a", "img", "svg", "video", "audio", "canvas", "figure", "figcaption", 'form', 'nav', 'header', 'footer', 'aside', 'menu', 'banner', 'dialog']
+    for tag in tags_to_remove:
+        for el in soup.find_all(tag):
+            el.decompose()
+
+    html_parts = []
+    # Only iterate through tags we know are safe and structural for text display
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     for element in soup.find_all(target_tags):
         element_text = clean_text_for_display(element.get_text(separator=' '))
         if not element_text: continue
+        
         passage_score = 0.5
         for unit_text, score in unit_scores_map.items():
             if element_text in unit_text:
                 passage_score = score
                 break
+        
         color = "green" if passage_score >= 0.75 else "red" if passage_score < 0.35 else "inherit"
-        element['style'] = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 12px; margin-top: 12px;"
-    return str(soup)
+        style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 1em; margin-top: 1em;"
+        
+        tag_name = element.name
+        # Rebuild the tag safely, using only its text content and our style
+        if tag_name in ['ul', 'ol']:
+            list_items_html = "".join([f"<li>{clean_text_for_display(li.get_text())}</li>" for li in element.find_all('li')])
+            html_parts.append(f"<{tag_name} style='{style}'>{list_items_html}</{tag_name}>")
+        else:
+            html_parts.append(f"<{tag_name} style='{style}'>{element_text}</{tag_name}>")
+            
+    return "".join(html_parts)
 
 def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     if not page_text_content or not unit_scores_map: return "<p>No content to highlight.</p>"
@@ -388,7 +400,7 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                         unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
                         highlighted_html = ""
                         if st.session_state.last_analysis_granularity.startswith("Passage"):
-                            highlighted_html = get_passage_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
+                            highlighted_html = render_safe_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
                         else:
                             highlighted_html = get_sentence_highlighted_html_flat(p_data["page_text_for_highlight"], unit_scores_for_query)
                         st.markdown(highlighted_html, unsafe_allow_html=True)
@@ -401,4 +413,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.17 | Final")
+st.sidebar.info("Query Fan-Out Analyzer | v5.18 | Final")
