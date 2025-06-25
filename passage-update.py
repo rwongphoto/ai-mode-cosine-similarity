@@ -19,6 +19,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
+import textwrap # --- NEW: For intelligently wrapping text in tooltips
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -58,51 +59,64 @@ def enforce_rate_limit():
     last_request_time = time.time()
 
 # --- Sidebar API Configuration ---
-st.sidebar.header("🔑 OpenAI API Configuration")
-openai_api_key_input = st.sidebar.text_input("Enter OpenAI API Key:", type="password", value=st.session_state.get("openai_api_key_to_persist", ""))
-if st.sidebar.button("Set & Verify OpenAI Key"):
-    if openai_api_key_input:
-        try:
-            test_client = OpenAI(api_key=openai_api_key_input)
-            test_client.embeddings.create(input=["test"], model="text-embedding-3-small")
-            st.session_state.openai_api_key_to_persist = openai_api_key_input
-            st.session_state.openai_api_configured = True
-            st.session_state.openai_client = test_client
-            st.sidebar.success("OpenAI API Key Configured!")
-        except Exception as e:
-            st.session_state.openai_api_key_to_persist = ""
-            st.session_state.openai_api_configured = False
-            st.session_state.openai_client = None
-            st.sidebar.error(f"OpenAI Key Failed: {str(e)[:200]}")
-    else: st.sidebar.warning("Please enter OpenAI API Key.")
+st.sidebar.header("🔑 API Configuration")
+with st.sidebar.expander("OpenAI API", expanded=not st.session_state.get("openai_api_configured", False)):
+    openai_api_key_input = st.text_input("Enter OpenAI API Key:", type="password", value=st.session_state.get("openai_api_key_to_persist", ""))
+    if st.button("Set & Verify OpenAI Key"):
+        if openai_api_key_input:
+            try:
+                test_client = OpenAI(api_key=openai_api_key_input)
+                test_client.embeddings.create(input=["test"], model="text-embedding-3-small")
+                st.session_state.openai_api_key_to_persist = openai_api_key_input
+                st.session_state.openai_api_configured = True
+                st.session_state.openai_client = test_client
+                st.success("OpenAI API Key Configured!")
+                st.rerun()
+            except Exception as e:
+                st.session_state.openai_api_key_to_persist = ""
+                st.session_state.openai_api_configured = False
+                st.session_state.openai_client = None
+                st.error(f"OpenAI Key Failed: {str(e)[:200]}")
+        else: st.warning("Please enter OpenAI API Key.")
+
+with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini_api_configured", False)):
+    gemini_api_key_input = st.text_input("Enter Google Gemini API Key:", type="password", value=st.session_state.get("gemini_api_key_to_persist", ""))
+    if st.button("Set & Verify Gemini Key"):
+        if gemini_api_key_input:
+            try:
+                genai.configure(api_key=gemini_api_key_input)
+                if not any('generateContent' in m.supported_generation_methods for m in genai.list_models()):
+                    raise Exception("No usable models found for this API key.")
+                st.session_state.gemini_api_key_to_persist = gemini_api_key_input
+                st.session_state.gemini_api_configured = True
+                st.success("Gemini API Key Configured!")
+                st.rerun()
+            except Exception as e:
+                st.session_state.gemini_api_key_to_persist = ""
+                st.session_state.gemini_api_configured = False
+                st.error(f"API Key Failed: {str(e)[:200]}")
+        else: st.warning("Please enter API Key.")
+
+st.sidebar.markdown("---")
 if st.session_state.get("openai_api_configured"):
     st.sidebar.markdown("✅ OpenAI API: **Configured**")
-    if st.session_state.openai_client is None and st.session_state.openai_api_key_to_persist:
-        try: st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
-        except Exception: st.session_state.openai_api_configured = False
-else: st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
-st.sidebar.header("🔑 Gemini API Configuration")
-api_key_input = st.sidebar.text_input("Enter Google Gemini API Key:", type="password", value=st.session_state.gemini_api_key_to_persist)
-if st.sidebar.button("Set & Verify API Key"):
-    if api_key_input:
-        try:
-            genai.configure(api_key=api_key_input)
-            if not [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods or 'embedContent' in m.supported_generation_methods]:
-                 raise Exception("No usable models found for this API key.")
-            st.session_state.gemini_api_key_to_persist = api_key_input
-            st.session_state.gemini_api_configured = True
-            st.sidebar.success("Gemini API Key Configured!")
-        except Exception as e:
-            st.session_state.gemini_api_key_to_persist = ""
-            st.session_state.gemini_api_configured = False
-            st.sidebar.error(f"API Key Failed: {str(e)[:200]}")
-    else: st.sidebar.warning("Please enter API Key.")
+else:
+    st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
+
 if st.session_state.get("gemini_api_configured"):
     st.sidebar.markdown("✅ Gemini API: **Configured**")
-    if st.session_state.gemini_api_key_to_persist:
-        try: genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
-        except Exception: st.session_state.gemini_api_configured = False
-else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
+else:
+    st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
+
+# Initialize clients if keys exist in session state but clients are not set
+if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
+    st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
+if st.session_state.get("gemini_api_key_to_persist"):
+    try:
+        genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
+    except Exception as e:
+        st.session_state.gemini_api_configured = False
+
 
 # --- Embedding Functions ---
 @st.cache_resource
@@ -113,23 +127,19 @@ def get_openai_embeddings(texts: list, client: OpenAI, model: str):
     if not texts or not client: return np.array([])
     try:
         texts = [text.replace("\n", " ") for text in texts]
-        response = client.embeddings.create(input=texts, model=model)
-        return np.array([item.embedding for item in response.data])
+        response = client.embeddings.create(input=texts, model=model); return np.array([item.embedding for item in response.data])
     except Exception as e: st.error(f"OpenAI embedding failed: {e}"); return np.array([])
 def get_gemini_embeddings(texts: list, model: str):
     if not texts: return np.array([])
     try:
-        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT")
-        return np.array(result['embedding'])
+        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT"); return np.array(result['embedding'])
     except Exception as e: st.error(f"Gemini embedding failed: {e}"); return np.array([])
 def get_embeddings(texts, local_model_instance=None):
     model_choice = st.session_state.selected_embedding_model
     if model_choice.startswith("openai-"):
-        model_name = model_choice.replace("openai-", "")
-        return get_openai_embeddings(texts, client=st.session_state.openai_client, model=model_name)
+        return get_openai_embeddings(texts, client=st.session_state.openai_client, model=model_choice.replace("openai-", ""))
     elif model_choice.startswith("gemini-"):
-        model_name = "models/" + model_choice.replace("gemini-", "")
-        return get_gemini_embeddings(texts, model=model_name)
+        return get_gemini_embeddings(texts, model="models/" + model_choice.replace("gemini-", ""))
     else:
         if local_model_instance is None: st.error("Local embedding model not loaded."); return np.array([])
         return local_model_instance.encode(list(texts) if isinstance(texts, tuple) else texts)
@@ -237,6 +247,7 @@ def get_highlighted_sentence_html(page_text_content, query_text, local_model_ins
             color = "green" if sim >= 0.75 else "red" if sim < 0.35 else "black"
             highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     return highlighted_html
+
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
     model = genai.GenerativeModel("gemini-1.5-flash-latest")
@@ -305,7 +316,7 @@ if analysis_granularity.startswith("Passage"):
     st.sidebar.subheader("Passage Context Settings")
     s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, help="For each core passage, include N sentences from adjacent passages for contextual similarity calculation. This overlap is NOT shown in the results display.")
 else: s_overlap_val = 0
-analyze_disabled = not st.session_state.get("gemini_api_configured", False)
+analyze_disabled = not st.session_state.get("gemini_api_configured", False) and not st.session_state.get("openai_api_configured")
 
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_disabled):
     jobs = []
@@ -325,9 +336,11 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
     st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
     if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
         with st.spinner("Initializing Selenium..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
-    synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
+    with st.spinner("Generating synthetic queries..."):
+        synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
     local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
-    local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
+    with st.spinner("Embedding all queries..."):
+        local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
     initial_query_embedding = local_all_query_embs[0]
     local_all_metrics, local_processed_units_data = [], {}
     with st.spinner(f"Processing {len(jobs)} content source(s)..."):
@@ -404,7 +417,11 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             all_queries = st.session_state.all_queries_for_analysis
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
-            hover_text = [[f"<b>{unit_labels[i]}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr><b>Text:</b><br>{units[i]}" for i in range(unit_sims.shape[0])] for j in range(unit_sims.shape[1])]
+            
+            # --- KEY CHANGE: Wrap text for tooltip display ---
+            wrapped_units = [textwrap.fill(unit, width=100, replace_whitespace=False).replace('\n', '<br>') for unit in units]
+            hover_text = [[f"<b>{unit_labels[i]}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr><b>Text:</b><br>{wrapped_units[i]}" for i in range(unit_sims.shape[0])] for j in range(unit_sims.shape[1])]
+
             fig_heat = go.Figure(data=go.Heatmap(z=unit_sims.T, x=unit_labels, y=short_queries, colorscale='Viridis', zmin=0, zmax=1, text=hover_text, hoverinfo='text'))
             fig_heat.update_layout(title=f"{unit_label} Similarity for {identifier}", height=max(400, 25 * len(short_queries) + 100), yaxis_autorange='reversed', xaxis_title=f"{unit_label}s", yaxis_title="Queries")
             st.plotly_chart(fig_heat, use_container_width=True)
@@ -428,4 +445,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.9 | Header Merging")
+st.sidebar.info("Query Fan-Out Analyzer | v5.10 | Tooltip Wrap Fix")
