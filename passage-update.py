@@ -38,7 +38,6 @@ if "selected_embedding_model" not in st.session_state: st.session_state.selected
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
-# --- FULLY RESTORED USER AGENTS LIST ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -213,43 +212,41 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
 
-def get_structurally_highlighted_html(html_content, unit_scores_map):
+# --- NEW: Passage-level Highlighting ---
+def get_passage_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
     soup = BeautifulSoup(html_content, 'html.parser')
     for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog']):
         if el.name: el.decompose()
-    selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
-    for sel in selectors:
-        try:
-            for element in soup.select(sel):
-                if not any(p.name in ['main', 'article', 'body'] for p in element.parents): element.decompose()
-        except Exception: pass
-    text_tags = soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th'])
-    for element in text_tags:
-        element_text = element.get_text(separator=" ", strip=True)
-        sentences = split_text_into_sentences(element_text)
-        if not sentences: continue
-        element.clear()
-        for sentence in sentences:
-            sentence_score = 0.5
-            for unit_text, score in unit_scores_map.items():
-                if sentence in unit_text: sentence_score = score; break
-            color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
-            new_span = soup.new_tag("span")
-            new_span.string = sentence + " "
-            new_span['style'] = f"color:{color};"
-            element.append(new_span)
+    target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
+    for element in soup.find_all(target_tags):
+        element_text = re.sub(r'\s+', ' ', element.get_text(strip=True)).strip()
+        if not element_text: continue
+        
+        passage_score = 0.5
+        # Find the score for this element's text by checking which analyzed passage it's part of.
+        # This handles cases where a header and paragraph were merged for scoring.
+        for unit_text, score in unit_scores_map.items():
+            if element_text in unit_text:
+                passage_score = score
+                break
+        
+        color = "green" if passage_score >= 0.75 else "red" if passage_score < 0.35 else "inherit"
+        element['style'] = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 10px;"
+        
     return str(soup)
 
-def get_highlighted_sentence_html(page_text_content, unit_scores_map=None):
+# --- Renamed: Sentence-level Highlighting (for Sentence mode) ---
+def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     if not page_text_content or not unit_scores_map: return "<p>No content to highlight.</p>"
     sentences = split_text_into_sentences(page_text_content)
     if not sentences: return "<p>No sentences to highlight.</p>"
     highlighted_html = ""
     for sentence in sentences:
         sentence_score = 0.5
-        for unit_text, score in unit_scores_map.items():
-            if sentence in unit_text: sentence_score = score; break
+        # In sentence mode, the unit_scores_map keys are the sentences themselves
+        if sentence in unit_scores_map:
+            sentence_score = unit_scores_map[sentence]
         color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     return highlighted_html
@@ -259,25 +256,16 @@ def generate_synthetic_queries(user_query, num_queries=7):
     model = genai.GenerativeModel("gemini-1.5-flash-latest")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
-    Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique.
-    These queries should explore different facets, intents, or related concepts.
-    Aim for a mix of the following query types, ensuring variety:
-    1.  Related Queries: Queries on closely associated topics or entities.
-    2.  Implicit Queries: Queries that unearth underlying assumptions or unstated needs related to the original query.
-    3.  Comparative Queries: Queries that seek to compare aspects of the original query's subject with alternatives or other facets.
-    4.  Recent Queries (Hypothetical): If this were part of an ongoing search session, what related queries might have come before or could follow? (Focus on logical next steps).
-    5.  Personalized Queries (Hypothetical): Example queries that reflect how the original query might be personalized based on hypothetical user contexts, preferences, or history (e.g., "best [topic] for families with young children," or "[topic] near me now").
-    6.  Reformulation Queries: Different ways of phrasing the original query to capture the same or slightly nuanced intent.
-    7.  Entity-Expanded Queries: Queries that broaden the scope by including related entities or exploring the original entity in more contexts (e.g., if original is "Eiffel Tower", expand to "history of Eiffel Tower construction", "restaurants near Eiffel Tower", "Eiffel Tower controversy").
-
+    Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique. These queries should explore different facets, intents, or related concepts. Aim for a mix of the following query types, ensuring variety:
+    1. Related Queries: Queries on closely associated topics or entities.
+    2. Implicit Queries: Queries that unearth underlying assumptions or unstated needs related to the original query.
+    3. Comparative Queries: Queries that seek to compare aspects of the original query's subject with alternatives or other facets.
+    4. Recent Queries (Hypothetical): If this were part of an ongoing search session, what related queries might have come before or could follow? (Focus on logical next steps).
+    5. Personalized Queries (Hypothetical): Example queries that reflect how the original query might be personalized based on hypothetical user contexts, preferences, or history (e.g., "best [topic] for families with young children," or "[topic] near me now").
+    6. Reformulation Queries: Different ways of phrasing the original query to capture the same or slightly nuanced intent.
+    7. Entity-Expanded Queries: Queries that broaden the scope by including related entities or exploring the original entity in more contexts (e.g., if original is "Eiffel Tower", expand to "history of Eiffel Tower construction", "restaurants near Eiffel Tower", "Eiffel Tower controversy").
     CRITICAL INSTRUCTIONS:
-    - Ensure the generated queries span multiple query categories from the list above.
-    - The queries should be distinct and aim to retrieve diverse content types or aspects.
-    - Avoid overfitting to the exact same semantic zone; seek semantic diversity.
-    - Do NOT number the queries or add any prefix like "Query 1:".
-    - Return ONLY a Python-parseable list of strings. For example:
-      ["synthetic query 1", "another synthetic query", "a third different query"]
-    - Each query in the list should be a complete, self-contained search query string.
+    - Ensure the generated queries span multiple query categories from the list above. - The queries should be distinct and aim to retrieve diverse content types or aspects. - Avoid overfitting to the exact same semantic zone; seek semantic diversity. - Do NOT number the queries or add any prefix like "Query 1:". - Return ONLY a Python-parseable list of strings. For example: ["synthetic query 1", "another synthetic query", "a third different query"] - Each query in the list should be a complete, self-contained search query string.
     """
     try:
         response = model.generate_content(prompt); content_text = response.text.strip()
@@ -409,9 +397,9 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                         unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
                         highlighted_html = ""
                         if st.session_state.last_analysis_granularity.startswith("Passage"):
-                            highlighted_html = get_structurally_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
+                            highlighted_html = get_passage_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
                         else:
-                            highlighted_html = get_highlighted_sentence_html(p_data["page_text_for_highlight"], unit_scores_for_query)
+                            highlighted_html = get_sentence_highlighted_html_flat(p_data["page_text_for_highlight"], unit_scores_for_query)
                         st.markdown(highlighted_html, unsafe_allow_html=True)
                 if st.checkbox(f"Show top/bottom {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{key_base}_{query_idx}"):
                     n_val = st.slider("N:", 1, 10, 3, key=f"sl_tb_{key_base}_{query_idx}")
@@ -422,4 +410,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.12 | Final")
+st.sidebar.info("Query Fan-Out Analyzer | v5.13 | Passage Highlighting Fix")
