@@ -237,7 +237,7 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model = genai.GenerativeModel("gemini-1.5-flash-latest")
+    model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique. These queries should explore different facets, intents, or related concepts. Aim for a mix of the following query types, ensuring variety:
