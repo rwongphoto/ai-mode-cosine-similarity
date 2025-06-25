@@ -37,7 +37,6 @@ if "selected_embedding_model" not in st.session_state: st.session_state.selected
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
-# --- FULLY RESTORED USER AGENTS LIST ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -167,7 +166,6 @@ def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
 
 def parse_and_clean_html(html_content, url, use_trafilatura=True):
-    # This function is now mainly a fallback or for sentence-based mode
     if not html_content: return None
     text_content = None
     if use_trafilatura:
@@ -187,7 +185,12 @@ def split_text_into_sentences(text):
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
 
+# --- UPDATED: extract_structural_passages_with_full_text ---
 def extract_structural_passages_with_full_text(html_content):
+    """
+    Parses HTML to extract content from block-level semantic tags.
+    Lists (ul, ol) and tables are treated as single passages.
+    """
     if not html_content: return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
     for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog']):
@@ -199,10 +202,17 @@ def extract_structural_passages_with_full_text(html_content):
                 is_main_container = element.name in ['body', 'main', 'article'] or any(c in element.get('class', []) for c in ['content', 'main-content', 'article-body'])
                 if not is_main_container: element.decompose()
         except Exception: pass
-    target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'td', 'th']
+    
+    # --- KEY CHANGE HERE ---
+    # Target the block containers (ul, ol, table) directly, not their children (li, td).
+    target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
+    
     content_elements = soup.find_all(target_tags)
+    
+    # get_text() on a container like <ul> will extract text from all its children <li>s.
     passages = [re.sub(r'\s+', ' ', el.get_text(strip=True)).strip() for el in content_elements]
-    passages = [p for p in passages if p and len(p.split()) > 3]
+    passages = [p for p in passages if p and len(p.split()) > 2] # Filter for meaningful passages
+    
     full_text = re.sub(r'\s+', ' ', soup.get_text(strip=True)).strip()
     return passages, full_text
 
@@ -230,14 +240,13 @@ def get_highlighted_sentence_html(page_text_content, query_text, local_model_ins
     if unit_scores_map:
         for sentence in sentences:
             sentence_score = 0.5
-            # In passage mode, find which passage the sentence belongs to to get its score
             for unit_text, score in unit_scores_map.items():
                 if sentence in unit_text:
                     sentence_score = score
                     break
             color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
             highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
-    else: # Sentence mode
+    else:
         sentence_embeddings = get_embeddings(sentences, local_model_instance)
         query_embedding = get_embeddings([query_text], local_model_instance)
         if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings.</p>"
@@ -248,10 +257,9 @@ def get_highlighted_sentence_html(page_text_content, query_text, local_model_ins
             highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
     return highlighted_html
 
-# --- FULLY RESTORED generate_synthetic_queries FUNCTION ---
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
+    model = genai.GenerativeModel("gemini-1.5-flash-latest")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique.
@@ -296,7 +304,6 @@ st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 
 st.sidebar.subheader("🤖 Embedding Model Configuration")
-# --- FULLY RESTORED EMBEDDING MODEL OPTIONS ---
 embedding_model_options = {
     "Local: MPNet (Quality Focus)": "all-mpnet-base-v2",
     "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2",
@@ -335,7 +342,6 @@ else: s_overlap_val = 0
 analyze_disabled = not st.session_state.get("gemini_api_configured", False)
 
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_disabled):
-    # --- Analysis Logic with Separation of Display/Embedding Units ---
     jobs = []
     if not initial_query_val: st.warning("Initial Search Query is required."); st.stop()
     if input_mode == "Fetch from URLs":
@@ -369,10 +375,8 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
             identifier = job['identifier']
             st.markdown(f"--- \n#### Processing: {identifier}")
             
-            units_for_display = []
-            units_for_embedding = []
+            units_for_display, units_for_embedding = [], []
             page_text_for_highlight = ""
-
             content = job.get('content') or (fetch_content_with_selenium(identifier, st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(identifier))
             if not content or len(content.strip()) < 20:
                 st.warning(f"Insufficient text from {identifier}. Skipping."); continue
@@ -382,17 +386,14 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 if page_text_for_highlight:
                     units_for_display = split_text_into_sentences(page_text_for_highlight)
                     units_for_embedding = units_for_display
-            else: # Passage-based
+            else:
                 if job['type'] == 'url':
                     units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(content)
                 else:
                     page_text_for_highlight = content
                     units_for_display = [p.strip() for p in content.split('\n\n') if p.strip()]
-
                 if not units_for_display and page_text_for_highlight:
-                    st.warning(f"Could not extract structural passages for {identifier}. Analyzing as one large passage.")
                     units_for_display = [page_text_for_highlight]
-                
                 if units_for_display:
                     units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
 
@@ -400,11 +401,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 st.warning(f"No processable content units found for {identifier}. Skipping."); continue
 
             unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
-            local_processed_units_data[identifier] = {
-                "units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, 
-                "page_text_for_highlight": page_text_for_highlight
-            }
-
+            local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight}
             if unit_embeddings.size > 0:
                 unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
                 weights = np.maximum(0, unit_sims_to_initial)
@@ -412,17 +409,14 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 overall_sims = cosine_similarity(weighted_overall_emb, local_all_query_embs)[0]
                 unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
                 local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
-
                 for sq_idx, query_text in enumerate(local_all_queries):
                     current_q_unit_sims = unit_q_sims[:, sq_idx]
                     local_all_metrics.append({
-                        "URL": identifier, "Query": query_text,
-                        "Overall Similarity (Weighted)": overall_sims[sq_idx],
+                        "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx],
                         "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
                         "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
                         "Num Units": len(units_for_display)
                     })
-    
     if local_all_metrics:
         st.session_state.all_url_metrics_list = local_all_metrics
         st.session_state.url_processed_units_dict = local_processed_units_data
@@ -432,24 +426,16 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
 
 # --- Display Results ---
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
-    # This section is unchanged as it already correctly uses the "units" for display
     st.subheader("Analysed Queries (Initial + Synthetic)")
     st.expander("View All Analysed Queries").json([q.replace("Initial: ", "(Initial) ") for q in st.session_state.all_queries_for_analysis])
-
     unit_label = "Sentence" if st.session_state.last_analysis_granularity.startswith("Sentence") else "Passage"
-    
     st.markdown("---"); st.subheader(f"📈 Overall Similarity & {unit_label} Metrics Summary")
     df_summary = pd.DataFrame(st.session_state.all_url_metrics_list)
-    df_display = df_summary.rename(columns={
-        "URL": "Source / URL", "Max Unit Sim.": f"Max {unit_label} Sim.",
-        "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", "Num Units": f"Num {unit_label}s"
-    })
+    df_display = df_summary.rename(columns={"URL": "Source / URL", "Max Unit Sim.": f"Max {unit_label} Sim.", "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", "Num Units": f"Num {unit_label}s"})
     st.dataframe(df_display.style.format("{:.3f}", subset=["Overall Similarity (Weighted)", f"Max {unit_label} Sim.", f"Avg. {unit_label} Sim."]), use_container_width=True)
-    
     st.markdown("---"); st.subheader("📊 Visual: Overall Similarity to All Queries (Weighted)")
     fig_bar = px.bar(df_display, x="Query", y="Overall Similarity (Weighted)", color="Source / URL", barmode="group", title="Overall Content Similarity to Queries", height=max(600, 80 * len(st.session_state.all_queries_for_analysis)))
     fig_bar.update_yaxes(range=[0,1]); st.plotly_chart(fig_bar, use_container_width=True)
-    
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. All Queries")
     local_model_instance_for_display = None
     if not st.session_state.selected_embedding_model.startswith(('openai-', 'gemini-')):
@@ -464,14 +450,12 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
             
-            hover_text = [[f"<b>{unit_label[0]}{i+1}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr>Text:{units[i][:120]}..."
-                           for j in range(unit_sims.shape[1])]
-                          for i in range(unit_sims.shape[0])]
+            hover_text = [[f"<b>{unit_labels[i]}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr><b>Text:</b><br>{units[i][:200]}..."
+                           for i in range(unit_sims.shape[0])]
+                          for j in range(unit_sims.shape[1])]
 
-            fig_heat = go.Figure(data=go.Heatmap(
-                z=unit_sims.T, x=unit_labels, y=short_queries, colorscale='Viridis', zmin=0, zmax=1, text=hover_text, hoverinfo='text'
-            ))
-            fig_heat.update_layout(title=f"{unit_label} Similarity for {identifier}", height=max(400, 25 * len(short_queries) + 100), yaxis_autorange='reversed',xaxis_title=f"{unit_label}s", yaxis_title="Queries")
+            fig_heat = go.Figure(data=go.Heatmap(z=unit_sims.T, x=unit_labels, y=short_queries, colorscale='Viridis', zmin=0, zmax=1, text=hover_text, hoverinfo='text'))
+            fig_heat.update_layout(title=f"{unit_label} Similarity for {identifier}", height=max(400, 25 * len(short_queries) + 100), yaxis_autorange='reversed', xaxis_title=f"{unit_label}s", yaxis_title="Queries")
             st.plotly_chart(fig_heat, use_container_width=True)
             
             st.markdown("---")
@@ -496,4 +480,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]: st.caption(f"Score: {u_s:.3f} - {u_t[:200]}...")
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.4 | Full Code Restore")
+st.sidebar.info("Query Fan-Out Analyzer | v5.6 | Block-Level Passages")
