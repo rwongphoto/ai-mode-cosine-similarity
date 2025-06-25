@@ -19,7 +19,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
-import textwrap # --- NEW: For intelligently wrapping text in tooltips
+import textwrap
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -38,6 +38,7 @@ if "selected_embedding_model" not in st.session_state: st.session_state.selected
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
+# --- FULLY RESTORED USER AGENTS LIST ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -98,24 +99,15 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
         else: st.warning("Please enter API Key.")
 
 st.sidebar.markdown("---")
-if st.session_state.get("openai_api_configured"):
-    st.sidebar.markdown("✅ OpenAI API: **Configured**")
-else:
-    st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
-
-if st.session_state.get("gemini_api_configured"):
-    st.sidebar.markdown("✅ Gemini API: **Configured**")
-else:
-    st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
-
-# Initialize clients if keys exist in session state but clients are not set
+if st.session_state.get("openai_api_configured"): st.sidebar.markdown("✅ OpenAI API: **Configured**")
+else: st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
+if st.session_state.get("gemini_api_configured"): st.sidebar.markdown("✅ Gemini API: **Configured**")
+else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
     st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
 if st.session_state.get("gemini_api_key_to_persist"):
-    try:
-        genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
-    except Exception as e:
-        st.session_state.gemini_api_configured = False
+    try: genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
+    except Exception: st.session_state.gemini_api_configured = False
 
 
 # --- Embedding Functions ---
@@ -127,12 +119,14 @@ def get_openai_embeddings(texts: list, client: OpenAI, model: str):
     if not texts or not client: return np.array([])
     try:
         texts = [text.replace("\n", " ") for text in texts]
-        response = client.embeddings.create(input=texts, model=model); return np.array([item.embedding for item in response.data])
+        response = client.embeddings.create(input=texts, model=model)
+        return np.array([item.embedding for item in response.data])
     except Exception as e: st.error(f"OpenAI embedding failed: {e}"); return np.array([])
 def get_gemini_embeddings(texts: list, model: str):
     if not texts: return np.array([])
     try:
-        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT"); return np.array(result['embedding'])
+        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT")
+        return np.array(result['embedding'])
     except Exception as e: st.error(f"Gemini embedding failed: {e}"); return np.array([])
 def get_embeddings(texts, local_model_instance=None):
     model_choice = st.session_state.selected_embedding_model
@@ -184,8 +178,7 @@ def extract_structural_passages_with_full_text(html_content):
     for sel in selectors:
         try:
             for element in soup.select(sel):
-                is_main_container = element.name in ['body', 'main', 'article'] or any(c in element.get('class', []) for c in ['content', 'main-content', 'article-body'])
-                if not is_main_container: element.decompose()
+                if not any(p.name in ['main', 'article', 'body'] for p in element.parents): element.decompose()
         except Exception: pass
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     content_elements = soup.find_all(target_tags)
@@ -195,15 +188,12 @@ def extract_structural_passages_with_full_text(html_content):
         current_element = content_elements[i]
         current_text = re.sub(r'\s+', ' ', current_element.get_text(strip=True)).strip()
         if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
-            next_element = content_elements[i+1]
-            next_text = re.sub(r'\s+', ' ', next_element.get_text(strip=True)).strip()
+            next_element = content_elements[i+1]; next_text = re.sub(r'\s+', ' ', next_element.get_text(strip=True)).strip()
             combined_text = f"{current_text}. {next_text}"
-            if combined_text and len(combined_text.split()) > 2:
-                merged_passages.append(combined_text)
+            if combined_text and len(combined_text.split()) > 2: merged_passages.append(combined_text)
             i += 2
         else:
-            if current_text and len(current_text.split()) > 2:
-                merged_passages.append(current_text)
+            if current_text and len(current_text.split()) > 2: merged_passages.append(current_text)
             i += 1
     full_text = re.sub(r'\s+', ' ', soup.get_text(strip=True)).strip()
     return merged_passages, full_text
@@ -223,31 +213,47 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
 
-def get_highlighted_sentence_html(page_text_content, query_text, local_model_instance=None, unit_scores_map=None):
-    if not page_text_content or not query_text: return ""
-    sentences = split_text_into_sentences(page_text_content)
-    if not sentences: return "<p>No sentences to highlight.</p>"
-    highlighted_html = ""
-    if unit_scores_map:
+def get_structurally_highlighted_html(html_content, unit_scores_map):
+    if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
+    soup = BeautifulSoup(html_content, 'html.parser')
+    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog']):
+        if el.name: el.decompose()
+    selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
+    for sel in selectors:
+        try:
+            for element in soup.select(sel):
+                if not any(p.name in ['main', 'article', 'body'] for p in element.parents): element.decompose()
+        except Exception: pass
+    text_tags = soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th'])
+    for element in text_tags:
+        element_text = element.get_text(separator=" ", strip=True)
+        sentences = split_text_into_sentences(element_text)
+        if not sentences: continue
+        element.clear()
         for sentence in sentences:
             sentence_score = 0.5
             for unit_text, score in unit_scores_map.items():
-                if sentence in unit_text:
-                    sentence_score = score
-                    break
+                if sentence in unit_text: sentence_score = score; break
             color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
-            highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
-    else:
-        sentence_embeddings = get_embeddings(sentences, local_model_instance)
-        query_embedding = get_embeddings([query_text], local_model_instance)
-        if sentence_embeddings.size == 0 or query_embedding.size == 0: return "<p>Could not generate embeddings.</p>"
-        query_embedding = query_embedding[0].reshape(1, -1)
-        similarities = cosine_similarity(sentence_embeddings, query_embedding).flatten()
-        for sentence, sim in zip(sentences, similarities):
-            color = "green" if sim >= 0.75 else "red" if sim < 0.35 else "black"
-            highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
-    return highlighted_html
+            new_span = soup.new_tag("span")
+            new_span.string = sentence + " "
+            new_span['style'] = f"color:{color};"
+            element.append(new_span)
+    return str(soup)
 
+def get_highlighted_sentence_html(page_text_content, unit_scores_map=None):
+    if not page_text_content or not unit_scores_map: return "<p>No content to highlight.</p>"
+    sentences = split_text_into_sentences(page_text_content)
+    if not sentences: return "<p>No sentences to highlight.</p>"
+    highlighted_html = ""
+    for sentence in sentences:
+        sentence_score = 0.5
+        for unit_text, score in unit_scores_map.items():
+            if sentence in unit_text: sentence_score = score; break
+        color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
+        highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
+    return highlighted_html
+    
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
     model = genai.GenerativeModel("gemini-1.5-flash-latest")
@@ -274,18 +280,15 @@ def generate_synthetic_queries(user_query, num_queries=7):
     - Each query in the list should be a complete, self-contained search query string.
     """
     try:
-        response = model.generate_content(prompt)
-        content_text = response.text.strip()
+        response = model.generate_content(prompt); content_text = response.text.strip()
         try:
             for pf in ["```python","```json","```"]:
                 if content_text.startswith(pf): content_text=content_text.split(pf,1)[1].rsplit("```",1)[0].strip(); break
-            queries = ast.literal_eval(content_text) if content_text.startswith('[') else \
-                      [re.sub(r'^\s*[-\*\d\.]+\s*','',q.strip().strip('"\'')) for q in content_text.split('\n') if q.strip()]
+            queries = ast.literal_eval(content_text) if content_text.startswith('[') else [re.sub(r'^\s*[-\*\d\.]+\s*','',q.strip().strip('"\'')) for q in content_text.split('\n') if q.strip()]
             if not isinstance(queries,list) or not all(isinstance(qs,str) for qs in queries): raise ValueError("Not list of str.")
             return [qs for qs in queries if qs.strip()]
         except (SyntaxError,ValueError) as e:
-            st.error(f"Gemini response parse error: {e}. Raw: {content_text[:300]}...")
-            extracted=[re.sub(r'^\s*[-\*\d\.]+\s*','',l.strip().strip('"\'')) for l in content_text.split('\n') if l.strip()]
+            st.error(f"Gemini response parse error: {e}. Raw: {content_text[:300]}..."); extracted=[re.sub(r'^\s*[-\*\d\.]+\s*','',l.strip().strip('"\'')) for l in content_text.split('\n') if l.strip()]
             if extracted: st.warning("Fallback parsing used."); return extracted
             return []
     except Exception as e: st.error(f"Gemini API call error: {e}"); return []
@@ -329,46 +332,36 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
         jobs.append({'type': 'paste', 'identifier': pasted_content_label or "Pasted Content", 'content': pasted_content_text})
     local_embedding_model_instance = None
     if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
-        with st.spinner(f"Loading local model..."):
-            local_embedding_model_instance = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
+        with st.spinner(f"Loading local model..."): local_embedding_model_instance = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
         if not local_embedding_model_instance: st.stop()
     st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
     st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
     if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
         with st.spinner("Initializing Selenium..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
-    with st.spinner("Generating synthetic queries..."):
-        synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
+    with st.spinner("Generating synthetic queries..."): synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
     local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
-    with st.spinner("Embedding all queries..."):
-        local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
+    with st.spinner("Embedding all queries..."): local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
     initial_query_embedding = local_all_query_embs[0]
     local_all_metrics, local_processed_units_data = [], {}
     with st.spinner(f"Processing {len(jobs)} content source(s)..."):
         for i, job in enumerate(jobs):
-            identifier = job['identifier']
-            st.markdown(f"--- \n#### Processing: {identifier}")
-            units_for_display, units_for_embedding = [], []
-            page_text_for_highlight = ""
+            identifier = job['identifier']; st.markdown(f"--- \n#### Processing: {identifier}")
+            raw_html_for_highlighting = None
             content = job.get('content') or (fetch_content_with_selenium(identifier, st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(identifier))
-            if not content or len(content.strip()) < 20:
-                st.warning(f"Insufficient text from {identifier}. Skipping."); continue
+            if not content or len(content.strip()) < 20: st.warning(f"Insufficient text from {identifier}. Skipping."); continue
+            if job['type'] == 'url': raw_html_for_highlighting = content
+            else: paragraphs = content.split('\n\n'); raw_html_for_highlighting = "".join([f"<p>{p}</p>" for p in paragraphs])
             if analysis_granularity.startswith("Sentence"):
-                page_text_for_highlight = content if job['type'] == 'paste' else parse_and_clean_html(content, identifier, use_trafilatura_opt)
-                if page_text_for_highlight:
-                    units_for_display = split_text_into_sentences(page_text_for_highlight)
-                    units_for_embedding = units_for_display
+                page_text_for_highlight = parse_and_clean_html(raw_html_for_highlighting, identifier, use_trafilatura_opt)
+                units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
+                units_for_embedding = units_for_display
             else:
-                if job['type'] == 'url':
-                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(content)
-                else:
-                    page_text_for_highlight = content
-                    units_for_display = [p.strip() for p in content.split('\n\n') if p.strip()]
+                units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
+                units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
                 if not units_for_display and page_text_for_highlight: units_for_display = [page_text_for_highlight]
-                if units_for_display: units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
-            if not units_for_embedding:
-                st.warning(f"No processable content units found for {identifier}. Skipping."); continue
+            if not units_for_embedding: st.warning(f"No processable content units found for {identifier}. Skipping."); continue
             unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
-            local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight}
+            local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight, "raw_html": raw_html_for_highlighting}
             if unit_embeddings.size > 0:
                 unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
                 weights = np.maximum(0, unit_sims_to_initial)
@@ -377,51 +370,31 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
                 local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
                 for sq_idx, query_text in enumerate(local_all_queries):
-                    current_q_unit_sims = unit_q_sims[:, sq_idx]
-                    max_sim_passage_text = ""
-                    if current_q_unit_sims.size > 0:
-                        max_sim_idx = np.argmax(current_q_unit_sims)
-                        max_sim_passage_text = units_for_display[max_sim_idx]
-                    local_all_metrics.append({
-                        "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx],
-                        "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
-                        "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
-                        "Num Units": len(units_for_display), "Max Similarity Passage": max_sim_passage_text
-                    })
+                    current_q_unit_sims = unit_q_sims[:, sq_idx]; max_sim_passage_text = ""
+                    if current_q_unit_sims.size > 0: max_sim_idx = np.argmax(current_q_unit_sims); max_sim_passage_text = units_for_display[max_sim_idx]
+                    local_all_metrics.append({ "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx], "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, "Num Units": len(units_for_display), "Max Similarity Passage": max_sim_passage_text })
     if local_all_metrics:
-        st.session_state.all_url_metrics_list = local_all_metrics
-        st.session_state.url_processed_units_dict = local_processed_units_data
-        st.session_state.all_queries_for_analysis = local_all_queries
-        st.session_state.analysis_done = True
-        st.session_state.last_analysis_granularity = analysis_granularity
+        st.session_state.all_url_metrics_list = local_all_metrics; st.session_state.url_processed_units_dict = local_processed_units_data
+        st.session_state.all_queries_for_analysis = local_all_queries; st.session_state.analysis_done = True; st.session_state.last_analysis_granularity = analysis_granularity
 
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
-    st.subheader("Analysed Queries (Initial + Synthetic)")
-    st.expander("View All Analysed Queries").json([q.replace("Initial: ", "(Initial) ") for q in st.session_state.all_queries_for_analysis])
+    st.subheader("Analysed Queries (Initial + Synthetic)"); st.expander("View All Analysed Queries").json([q.replace("Initial: ", "(Initial) ") for q in st.session_state.all_queries_for_analysis])
     unit_label = "Sentence" if st.session_state.last_analysis_granularity.startswith("Sentence") else "Passage"
     st.markdown("---"); st.subheader(f"📈 Overall Similarity & {unit_label} Metrics Summary")
-    df_summary = pd.DataFrame(st.session_state.all_url_metrics_list)
-    df_display = df_summary.rename(columns={"URL": "Source / URL", "Max Unit Sim.": f"Max {unit_label} Sim.", "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", "Num Units": f"Num {unit_label}s"})
+    df_summary = pd.DataFrame(st.session_state.all_url_metrics_list); df_display = df_summary.rename(columns={"URL": "Source / URL", "Max Unit Sim.": f"Max {unit_label} Sim.", "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", "Num Units": f"Num {unit_label}s"})
     st.dataframe(df_display, use_container_width=True)
     st.markdown("---"); st.subheader("📊 Visual: Overall Similarity to All Queries (Weighted)")
     fig_bar = px.bar(df_display, x="Query", y="Overall Similarity (Weighted)", color="Source / URL", barmode="group", title="Overall Content Similarity to Queries", height=max(600, 80 * len(st.session_state.all_queries_for_analysis)))
     fig_bar.update_yaxes(range=[0,1]); st.plotly_chart(fig_bar, use_container_width=True)
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. All Queries")
-    local_model_instance_for_display = None
-    if not st.session_state.selected_embedding_model.startswith(('openai-', 'gemini-')):
-        local_model_instance_for_display = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
     for item_idx, (identifier, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
         with st.expander(f"Heatmap & Details for: {identifier}", expanded=(item_idx==0)):
             if p_data.get("unit_similarities") is None: st.write(f"No {unit_label.lower()} similarity data."); continue
-            unit_sims, units = p_data["unit_similarities"], p_data["units"]
-            all_queries = st.session_state.all_queries_for_analysis
+            unit_sims, units = p_data["unit_similarities"], p_data["units"]; all_queries = st.session_state.all_queries_for_analysis
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
-            
-            # --- KEY CHANGE: Wrap text for tooltip display ---
             wrapped_units = [textwrap.fill(unit, width=100, replace_whitespace=False).replace('\n', '<br>') for unit in units]
             hover_text = [[f"<b>{unit_labels[i]}</b> vs Q:'{all_queries[j][:45]}...'<br>Similarity:{unit_sims[i, j]:.3f}<hr><b>Text:</b><br>{wrapped_units[i]}" for i in range(unit_sims.shape[0])] for j in range(unit_sims.shape[1])]
-
             fig_heat = go.Figure(data=go.Heatmap(z=unit_sims.T, x=unit_labels, y=short_queries, colorscale='Viridis', zmin=0, zmax=1, text=hover_text, hoverinfo='text'))
             fig_heat.update_layout(title=f"{unit_label} Similarity for {identifier}", height=max(400, 25 * len(short_queries) + 100), yaxis_autorange='reversed', xaxis_title=f"{unit_label}s", yaxis_title="Queries")
             st.plotly_chart(fig_heat, use_container_width=True)
@@ -429,13 +402,17 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             key_base = f"{item_idx}_{identifier.replace('/', '_').replace(' ', '_')}"
             selected_query = st.selectbox(f"Select Query for Details:", options=st.session_state.all_queries_for_analysis, key=f"q_sel_{key_base}")
             if selected_query:
-                query_idx = st.session_state.all_queries_for_analysis.index(selected_query)
-                scored_units = sorted(zip(p_data["units"], unit_sims[:, query_idx]), key=lambda item: item[1], reverse=True)
+                query_idx = st.session_state.all_queries_for_analysis.index(selected_query); scored_units = sorted(zip(p_data["units"], unit_sims[:, query_idx]), key=lambda item: item[1], reverse=True)
                 query_display_name = selected_query.replace("Initial: ", "(I) ")[:30] + "..."
                 if st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{key_base}_{query_idx}"):
                     with st.spinner("Highlighting..."):
                         unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
-                        st.markdown(get_highlighted_sentence_html(p_data["page_text_for_highlight"], selected_query.replace("Initial: ", ""), local_model_instance_for_display, unit_scores_map=unit_scores_for_query), unsafe_allow_html=True)
+                        highlighted_html = ""
+                        if st.session_state.last_analysis_granularity.startswith("Passage"):
+                            highlighted_html = get_structurally_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
+                        else:
+                            highlighted_html = get_highlighted_sentence_html(p_data["page_text_for_highlight"], unit_scores_for_query)
+                        st.markdown(highlighted_html, unsafe_allow_html=True)
                 if st.checkbox(f"Show top/bottom {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{key_base}_{query_idx}"):
                     n_val = st.slider("N:", 1, 10, 3, key=f"sl_tb_{key_base}_{query_idx}")
                     st.markdown(f"**Top {n_val} {unit_label}s:**")
@@ -445,4 +422,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.10 | Tooltip Wrap Fix")
+st.sidebar.info("Query Fan-Out Analyzer | v5.12 | Final")
