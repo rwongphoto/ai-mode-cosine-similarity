@@ -140,14 +140,14 @@ def fetch_content_with_selenium(url, driver_instance):
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
 
-# --- NEW: Text Cleaning Function ---
+# --- UPDATED: Text Cleaning Function ---
 def clean_text_for_display(text):
-    """Collapses whitespace and ensures space after punctuation."""
+    """Collapses whitespace and ensures space after punctuation and between camelCase-like words."""
     if not text: return ""
-    # Collapse all whitespace to a single space
     cleaned_text = re.sub(r'\s+', ' ', text).strip()
-    # Add a space after sentence-ending punctuation if it's followed by a letter.
     cleaned_text = re.sub(r'([.?!])([a-zA-Z])', r'\1 \2', cleaned_text)
+    # Add a space between a lowercase letter and an uppercase letter (camelCase helper)
+    cleaned_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', cleaned_text)
     return cleaned_text
 
 def split_text_into_sentences(text):
@@ -172,9 +172,11 @@ def extract_structural_passages_with_full_text(html_content):
     i = 0
     while i < len(content_elements):
         current_element = content_elements[i]
-        current_text = current_element.get_text(strip=True) # Use basic strip here, clean later
+        # --- KEY CHANGE: Use separator=' ' for better text joining ---
+        current_text = current_element.get_text(separator=' ', strip=True)
         if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
-            next_element = content_elements[i+1]; next_text = next_element.get_text(strip=True)
+            next_element = content_elements[i+1]
+            next_text = next_element.get_text(separator=' ', strip=True)
             combined_text = f"{current_text}. {next_text}"
             if combined_text.strip(): merged_passages.append(combined_text)
             i += 2
@@ -182,9 +184,8 @@ def extract_structural_passages_with_full_text(html_content):
             if current_text.strip(): merged_passages.append(current_text)
             i += 1
     
-    # Apply consistent cleaning to all created passages
     final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
-    full_text = clean_text_for_display(soup.get_text())
+    full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
 
 def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
@@ -209,7 +210,7 @@ def get_passage_highlighted_html(html_content, unit_scores_map):
         if el.name: el.decompose()
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     for element in soup.find_all(target_tags):
-        element_text = clean_text_for_display(element.get_text())
+        element_text = clean_text_for_display(element.get_text(separator=' '))
         if not element_text: continue
         passage_score = 0.5
         for unit_text, score in unit_scores_map.items():
@@ -227,7 +228,6 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     highlighted_html = ""
     for sentence in sentences:
         sentence_score = 0.5
-        # In sentence mode, the unit_scores_map keys are the sentences themselves
         cleaned_sentence = clean_text_for_display(sentence)
         if cleaned_sentence in unit_scores_map:
             sentence_score = unit_scores_map[cleaned_sentence]
@@ -237,7 +237,7 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
+    model = genai.GenerativeModel("gemini-1.5-flash-latest")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique. These queries should explore different facets, intents, or related concepts. Aim for a mix of the following query types, ensuring variety:
@@ -322,8 +322,7 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
             content = job.get('content') or (fetch_content_with_selenium(identifier, st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(identifier))
             if not content or len(content.strip()) < 20: st.warning(f"Insufficient text from {identifier}. Skipping."); continue
             if job['type'] == 'url': raw_html_for_highlighting = content
-            else: paragraphs = content.split('\n\n'); raw_html_for_highlighting = "".join([f"<p>{p}</p>" for p in paragraphs])
-            
+            else: paragraphs = content.split('\n\n'); raw_html_for_highlighting = "".join([f"<p>{clean_text_for_display(p)}</p>" for p in paragraphs])
             if analysis_granularity.startswith("Sentence"):
                 page_text_for_highlight = clean_text_for_display(parse_and_clean_html(raw_html_for_highlighting, "", False))
                 units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
@@ -332,7 +331,6 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
                 units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
                 units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
                 if not units_for_display and page_text_for_highlight: units_for_display = [page_text_for_highlight]
-
             if not units_for_embedding: st.warning(f"No processable content units found for {identifier}. Skipping."); continue
             unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
             local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight, "raw_html": raw_html_for_highlighting}
@@ -396,4 +394,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.14 | Final Polish")
+st.sidebar.info("Query Fan-Out Analyzer | v5.15 | Final Text Cleaning")
