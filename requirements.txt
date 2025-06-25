@@ -13,3 +13,4 @@ selenium  # <-- Add this
 # webdriver-manager
 trafilatura
 openai
+selenium-stealth
