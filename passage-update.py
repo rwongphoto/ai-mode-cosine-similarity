@@ -140,21 +140,16 @@ def fetch_content_with_selenium(url, driver_instance):
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
 
-# --- UPDATED: Text Cleaning Function ---
 def clean_text_for_display(text):
-    """Collapses whitespace and ensures space after punctuation and between camelCase-like words."""
     if not text: return ""
     cleaned_text = re.sub(r'\s+', ' ', text).strip()
     cleaned_text = re.sub(r'([.?!])([a-zA-Z])', r'\1 \2', cleaned_text)
-    # Add a space between a lowercase letter and an uppercase letter (camelCase helper)
     cleaned_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', cleaned_text)
     return cleaned_text
-
 def split_text_into_sentences(text):
     if not text: return []
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
-
 def extract_structural_passages_with_full_text(html_content):
     if not html_content: return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -172,22 +167,18 @@ def extract_structural_passages_with_full_text(html_content):
     i = 0
     while i < len(content_elements):
         current_element = content_elements[i]
-        # --- KEY CHANGE: Use separator=' ' for better text joining ---
         current_text = current_element.get_text(separator=' ', strip=True)
         if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
-            next_element = content_elements[i+1]
-            next_text = next_element.get_text(separator=' ', strip=True)
+            next_element = content_elements[i+1]; next_text = next_element.get_text(separator=' ', strip=True)
             combined_text = f"{current_text}. {next_text}"
             if combined_text.strip(): merged_passages.append(combined_text)
             i += 2
         else:
             if current_text.strip(): merged_passages.append(current_text)
             i += 1
-    
     final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
     full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
-
 def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
     if not structural_passages or overlap_count == 0: return structural_passages
     def _get_n_sentences(text, n, from_start=True):
@@ -203,11 +194,18 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
 
+# --- UPDATED: Highlighting function now cleans media tags first ---
 def get_passage_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
     soup = BeautifulSoup(html_content, 'html.parser')
-    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog']):
+    
+    # KEY CHANGE: Clean the HTML of non-textual elements BEFORE processing for highlighting
+    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'menu', 'banner', 'dialog']):
         if el.name: el.decompose()
+    # Explicitly remove common media tags
+    for media_tag in soup.find_all(['img', 'svg', 'video', 'audio', 'canvas', 'figure', 'figcaption']):
+        media_tag.decompose()
+        
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     for element in soup.find_all(target_tags):
         element_text = clean_text_for_display(element.get_text(separator=' '))
@@ -309,19 +307,28 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
     st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
     st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
     if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
-        with st.spinner("Initializing Selenium..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
+        with st.spinner("Initializing Selenium WebDriver..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
     with st.spinner("Generating synthetic queries..."): synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
     local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
     with st.spinner("Embedding all queries..."): local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
     initial_query_embedding = local_all_query_embs[0]
     local_all_metrics, local_processed_units_data = [], {}
-    with st.spinner(f"Processing {len(jobs)} content source(s)..."):
-        for i, job in enumerate(jobs):
-            identifier = job['identifier']; st.markdown(f"--- \n#### Processing: {identifier}")
+    fetched_content = {}
+    if input_mode == "Fetch from URLs":
+        with st.spinner(f"Fetching content from {len(jobs)} URL(s)..."):
+            for job in jobs:
+                fetched_content[job['identifier']] = fetch_content_with_selenium(job['identifier'], st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(job['identifier'])
+        if st.session_state.selenium_driver_instance:
+            st.session_state.selenium_driver_instance.quit()
+            st.session_state.selenium_driver_instance = None
+    else: fetched_content[jobs[0]['identifier']] = jobs[0]['content']
+    with st.spinner(f"Processing {len(fetched_content)} content source(s)..."):
+        for identifier, content in fetched_content.items():
+            st.markdown(f"--- \n#### Processing: {identifier}")
             raw_html_for_highlighting = None
-            content = job.get('content') or (fetch_content_with_selenium(identifier, st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(identifier))
             if not content or len(content.strip()) < 20: st.warning(f"Insufficient text from {identifier}. Skipping."); continue
-            if job['type'] == 'url': raw_html_for_highlighting = content
+            is_url_source = any(job['identifier'] == identifier for job in jobs if job['type'] == 'url')
+            if is_url_source: raw_html_for_highlighting = content
             else: paragraphs = content.split('\n\n'); raw_html_for_highlighting = "".join([f"<p>{clean_text_for_display(p)}</p>" for p in paragraphs])
             if analysis_granularity.startswith("Sentence"):
                 page_text_for_highlight = clean_text_for_display(parse_and_clean_html(raw_html_for_highlighting, "", False))
@@ -394,4 +401,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.15 | Final Text Cleaning")
+st.sidebar.info("Query Fan-Out Analyzer | v5.17 | Final")
