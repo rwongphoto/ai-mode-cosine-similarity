@@ -65,17 +65,11 @@ with st.sidebar.expander("OpenAI API", expanded=not st.session_state.get("openai
     if st.button("Set & Verify OpenAI Key"):
         if openai_api_key_input:
             try:
-                test_client = OpenAI(api_key=openai_api_key_input)
-                test_client.embeddings.create(input=["test"], model="text-embedding-3-small")
-                st.session_state.openai_api_key_to_persist = openai_api_key_input
-                st.session_state.openai_api_configured = True
-                st.session_state.openai_client = test_client
-                st.success("OpenAI API Key Configured!")
-                st.rerun()
+                test_client = OpenAI(api_key=openai_api_key_input); test_client.embeddings.create(input=["test"], model="text-embedding-3-small")
+                st.session_state.openai_api_key_to_persist, st.session_state.openai_api_configured, st.session_state.openai_client = openai_api_key_input, True, test_client
+                st.success("OpenAI API Key Configured!"); st.rerun()
             except Exception as e:
-                st.session_state.openai_api_key_to_persist = ""
-                st.session_state.openai_api_configured = False
-                st.session_state.openai_client = None
+                st.session_state.openai_api_key_to_persist, st.session_state.openai_api_configured, st.session_state.openai_client = "", False, None
                 st.error(f"OpenAI Key Failed: {str(e)[:200]}")
         else: st.warning("Please enter OpenAI API Key.")
 
@@ -85,15 +79,11 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
         if gemini_api_key_input:
             try:
                 genai.configure(api_key=gemini_api_key_input)
-                if not any('generateContent' in m.supported_generation_methods for m in genai.list_models()):
-                    raise Exception("No usable models found for this API key.")
-                st.session_state.gemini_api_key_to_persist = gemini_api_key_input
-                st.session_state.gemini_api_configured = True
-                st.success("Gemini API Key Configured!")
-                st.rerun()
+                if not any('generateContent' in m.supported_generation_methods for m in genai.list_models()): raise Exception("No usable models found for this API key.")
+                st.session_state.gemini_api_key_to_persist, st.session_state.gemini_api_configured = gemini_api_key_input, True
+                st.success("Gemini API Key Configured!"); st.rerun()
             except Exception as e:
-                st.session_state.gemini_api_key_to_persist = ""
-                st.session_state.gemini_api_configured = False
+                st.session_state.gemini_api_key_to_persist, st.session_state.gemini_api_configured = "", False
                 st.error(f"API Key Failed: {str(e)[:200]}")
         else: st.warning("Please enter API Key.")
 
@@ -117,22 +107,17 @@ def load_local_sentence_transformer_model(model_name):
 def get_openai_embeddings(texts: list, client: OpenAI, model: str):
     if not texts or not client: return np.array([])
     try:
-        texts = [text.replace("\n", " ") for text in texts]
-        response = client.embeddings.create(input=texts, model=model)
-        return np.array([item.embedding for item in response.data])
+        texts = [text.replace("\n", " ") for text in texts]; response = client.embeddings.create(input=texts, model=model); return np.array([item.embedding for item in response.data])
     except Exception as e: st.error(f"OpenAI embedding failed: {e}"); return np.array([])
 def get_gemini_embeddings(texts: list, model: str):
     if not texts: return np.array([])
     try:
-        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT")
-        return np.array(result['embedding'])
+        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT"); return np.array(result['embedding'])
     except Exception as e: st.error(f"Gemini embedding failed: {e}"); return np.array([])
 def get_embeddings(texts, local_model_instance=None):
     model_choice = st.session_state.selected_embedding_model
-    if model_choice.startswith("openai-"):
-        return get_openai_embeddings(texts, client=st.session_state.openai_client, model=model_choice.replace("openai-", ""))
-    elif model_choice.startswith("gemini-"):
-        return get_gemini_embeddings(texts, model="models/" + model_choice.replace("gemini-", ""))
+    if model_choice.startswith("openai-"): return get_openai_embeddings(texts, client=st.session_state.openai_client, model=model_choice.replace("openai-", ""))
+    elif model_choice.startswith("gemini-"): return get_gemini_embeddings(texts, model="models/" + model_choice.replace("gemini-", ""))
     else:
         if local_model_instance is None: st.error("Local embedding model not loaded."); return np.array([])
         return local_model_instance.encode(list(texts) if isinstance(texts, tuple) else texts)
@@ -154,15 +139,17 @@ def fetch_content_with_selenium(url, driver_instance):
         except Exception as req_e: st.error(f"Requests fallback also failed for {url}: {req_e}"); return None
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
-def parse_and_clean_html(html_content, url, use_trafilatura=True):
-    if not html_content: return None
-    text_content = trafilatura.extract(html_content, include_comments=False, include_tables=False, favor_recall=st.session_state.get("trafilatura_favor_recall", False)) if use_trafilatura else None
-    if not text_content:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog']): el.decompose()
-        text_content = soup.get_text(separator=' ', strip=True)
-    if text_content: return re.sub(r'\s+',' ',text_content).strip()
-    return None
+
+# --- NEW: Text Cleaning Function ---
+def clean_text_for_display(text):
+    """Collapses whitespace and ensures space after punctuation."""
+    if not text: return ""
+    # Collapse all whitespace to a single space
+    cleaned_text = re.sub(r'\s+', ' ', text).strip()
+    # Add a space after sentence-ending punctuation if it's followed by a letter.
+    cleaned_text = re.sub(r'([.?!])([a-zA-Z])', r'\1 \2', cleaned_text)
+    return cleaned_text
+
 def split_text_into_sentences(text):
     if not text: return []
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
@@ -185,17 +172,20 @@ def extract_structural_passages_with_full_text(html_content):
     i = 0
     while i < len(content_elements):
         current_element = content_elements[i]
-        current_text = re.sub(r'\s+', ' ', current_element.get_text(strip=True)).strip()
+        current_text = current_element.get_text(strip=True) # Use basic strip here, clean later
         if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
-            next_element = content_elements[i+1]; next_text = re.sub(r'\s+', ' ', next_element.get_text(strip=True)).strip()
+            next_element = content_elements[i+1]; next_text = next_element.get_text(strip=True)
             combined_text = f"{current_text}. {next_text}"
-            if combined_text and len(combined_text.split()) > 2: merged_passages.append(combined_text)
+            if combined_text.strip(): merged_passages.append(combined_text)
             i += 2
         else:
-            if current_text and len(current_text.split()) > 2: merged_passages.append(current_text)
+            if current_text.strip(): merged_passages.append(current_text)
             i += 1
-    full_text = re.sub(r'\s+', ' ', soup.get_text(strip=True)).strip()
-    return merged_passages, full_text
+    
+    # Apply consistent cleaning to all created passages
+    final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
+    full_text = clean_text_for_display(soup.get_text())
+    return final_passages, full_text
 
 def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
     if not structural_passages or overlap_count == 0: return structural_passages
@@ -212,7 +202,6 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
 
-# --- NEW: Passage-level Highlighting ---
 def get_passage_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -220,23 +209,17 @@ def get_passage_highlighted_html(html_content, unit_scores_map):
         if el.name: el.decompose()
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     for element in soup.find_all(target_tags):
-        element_text = re.sub(r'\s+', ' ', element.get_text(strip=True)).strip()
+        element_text = clean_text_for_display(element.get_text())
         if not element_text: continue
-        
         passage_score = 0.5
-        # Find the score for this element's text by checking which analyzed passage it's part of.
-        # This handles cases where a header and paragraph were merged for scoring.
         for unit_text, score in unit_scores_map.items():
             if element_text in unit_text:
                 passage_score = score
                 break
-        
         color = "green" if passage_score >= 0.75 else "red" if passage_score < 0.35 else "inherit"
-        element['style'] = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 10px;"
-        
+        element['style'] = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 12px; margin-top: 12px;"
     return str(soup)
 
-# --- Renamed: Sentence-level Highlighting (for Sentence mode) ---
 def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     if not page_text_content or not unit_scores_map: return "<p>No content to highlight.</p>"
     sentences = split_text_into_sentences(page_text_content)
@@ -245,10 +228,11 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     for sentence in sentences:
         sentence_score = 0.5
         # In sentence mode, the unit_scores_map keys are the sentences themselves
-        if sentence in unit_scores_map:
-            sentence_score = unit_scores_map[sentence]
+        cleaned_sentence = clean_text_for_display(sentence)
+        if cleaned_sentence in unit_scores_map:
+            sentence_score = unit_scores_map[cleaned_sentence]
         color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.35 else "black"
-        highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{sentence}</p>'
+        highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{cleaned_sentence}</p>'
     return highlighted_html
     
 def generate_synthetic_queries(user_query, num_queries=7):
@@ -339,14 +323,16 @@ if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=analyze_di
             if not content or len(content.strip()) < 20: st.warning(f"Insufficient text from {identifier}. Skipping."); continue
             if job['type'] == 'url': raw_html_for_highlighting = content
             else: paragraphs = content.split('\n\n'); raw_html_for_highlighting = "".join([f"<p>{p}</p>" for p in paragraphs])
+            
             if analysis_granularity.startswith("Sentence"):
-                page_text_for_highlight = parse_and_clean_html(raw_html_for_highlighting, identifier, use_trafilatura_opt)
+                page_text_for_highlight = clean_text_for_display(parse_and_clean_html(raw_html_for_highlighting, "", False))
                 units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
                 units_for_embedding = units_for_display
             else:
                 units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
                 units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
                 if not units_for_display and page_text_for_highlight: units_for_display = [page_text_for_highlight]
+
             if not units_for_embedding: st.warning(f"No processable content units found for {identifier}. Skipping."); continue
             unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
             local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight, "raw_html": raw_html_for_highlighting}
@@ -410,4 +396,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.13 | Passage Highlighting Fix")
+st.sidebar.info("Query Fan-Out Analyzer | v5.14 | Final Polish")
