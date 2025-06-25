@@ -20,6 +20,7 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 import textwrap
+from selenium_stealth import stealth # --- NEW: For bypassing bot detection
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -123,11 +124,31 @@ def get_embeddings(texts, local_model_instance=None):
         return local_model_instance.encode(list(texts) if isinstance(texts, tuple) else texts)
 
 # --- Core Content Processing Functions ---
+# --- UPDATED: Selenium Initialization with Stealth ---
 def initialize_selenium_driver():
-    options = ChromeOptions(); options.add_argument("--headless"); options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage"); options.add_argument("--disable-gpu"); options.add_argument(f"user-agent={get_random_user_agent()}")
-    try: return webdriver.Chrome(service=ChromeService(), options=options)
-    except Exception as e: st.error(f"Selenium init failed: {e}"); return None
+    options = ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    
+    try:
+        driver = webdriver.Chrome(service=ChromeService(), options=options)
+        
+        # Apply stealth settings
+        stealth(driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+                )
+        return driver
+    except Exception as e:
+        st.error(f"Selenium with Stealth init failed: {e}")
+        return None
+
 def fetch_content_with_selenium(url, driver_instance):
     if not driver_instance: return fetch_content_with_requests(url)
     try:
@@ -194,41 +215,31 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
 
-# --- NEW, SAFER HIGHLIGHTING FUNCTION ---
 def render_safe_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
     soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # First, a thorough cleaning of all potentially harmful or display-breaking tags
     tags_to_remove = ["script", "style", "noscript", "iframe", "link", "meta", "button", "a", "img", "svg", "video", "audio", "canvas", "figure", "figcaption", 'form', 'nav', 'header', 'footer', 'aside', 'menu', 'banner', 'dialog']
     for tag in tags_to_remove:
         for el in soup.find_all(tag):
             el.decompose()
-
     html_parts = []
-    # Only iterate through tags we know are safe and structural for text display
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     for element in soup.find_all(target_tags):
         element_text = clean_text_for_display(element.get_text(separator=' '))
         if not element_text: continue
-        
         passage_score = 0.5
         for unit_text, score in unit_scores_map.items():
             if element_text in unit_text:
                 passage_score = score
                 break
-        
         color = "green" if passage_score >= 0.75 else "red" if passage_score < 0.35 else "inherit"
         style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 1em; margin-top: 1em;"
-        
         tag_name = element.name
-        # Rebuild the tag safely, using only its text content and our style
         if tag_name in ['ul', 'ol']:
             list_items_html = "".join([f"<li>{clean_text_for_display(li.get_text())}</li>" for li in element.find_all('li')])
             html_parts.append(f"<{tag_name} style='{style}'>{list_items_html}</{tag_name}>")
         else:
             html_parts.append(f"<{tag_name} style='{style}'>{element_text}</{tag_name}>")
-            
     return "".join(html_parts)
 
 def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
@@ -289,7 +300,7 @@ st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"))
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
 if input_mode == "Fetch from URLs":
-    urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://vercel.com/blog/understanding-rendering-in-react\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
+    urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://professionalstaging.com/art-for-home-staging/\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
     use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.")
     st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.")
 else:
@@ -413,4 +424,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.18 | Final")
+st.sidebar.info("Query Fan-Out Analyzer | v5.19 | Final")
