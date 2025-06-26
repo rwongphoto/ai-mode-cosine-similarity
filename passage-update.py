@@ -300,7 +300,7 @@ st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"))
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
 if input_mode == "Fetch from URLs":
-    urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://professionalstaging.com/art-for-home-staging/\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
+    urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
     use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.")
     st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.")
 else:
@@ -424,4 +424,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.19 | Final")
+st.sidebar.info("Query Fan-Out Analyzer | v5.20 | MBAI")
