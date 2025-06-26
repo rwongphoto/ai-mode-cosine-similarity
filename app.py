@@ -289,7 +289,7 @@ def generate_synthetic_queries(user_query, num_queries=7):
 st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 st.sidebar.subheader("🤖 Embedding Model Configuration")
-embedding_model_options = { "Local: MPNet (Quality Focus)": "all-mpnet-base-v2", "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", "Gemini: embedding-001": "gemini-embedding-001"}
+embedding_model_options = { "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1", "Local: MPNet (Quality Focus)": "all-mpnet-base-v2", "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", "Gemini: embedding-001": "gemini-embedding-001"}
 selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", options=list(embedding_model_options.keys()), index=0)
 st.session_state.selected_embedding_model = embedding_model_options[selected_embedding_label]
 st.sidebar.subheader("📄 Text Extraction & Processing")
@@ -300,7 +300,7 @@ st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"))
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering")
 if input_mode == "Fetch from URLs":
-    urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://professionalstaging.com/art-for-home-staging/\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
+    urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://www.patterns.dev/posts/rendering-patterns/", height=100)
     use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.")
     st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.")
 else:
@@ -424,4 +424,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[-n_val:]:
                         st.markdown(f"**Score: {u_s:.3f}**"); st.markdown(f"> {u_t}"); st.divider()
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.19 | Final")
+st.sidebar.info("Query Fan-Out Analyzer | v5.20 | MBAI")
