@@ -413,8 +413,17 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                         st.markdown(highlighted_html, unsafe_allow_html=True)
                 if st.checkbox(f"Show top/bottom {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{key_base}_{query_idx}"):
                     n_val = st.slider("N:", 1, 10, 3, key=f"sl_tb_{key_base}_{query_idx}")
-                    st.markdown(f"**Top {n_val} {unit_label}s:**"); [st.markdown(f"**Score: {u_s:.3f}**\n> {u_t}\n***") for u_t, u_s in scored_units[:n_val]]
-                    st.markdown(f"**Bottom {n_val} {unit_label}s:**"); [st.markdown(f"**Score: {u_s:.3f}**\n> {u_t}\n***") for u_t, u_s in scored_units[-n_val:]]
+                    st.markdown(f"**Top {n_val} {unit_label}s:**")
+                    for u_t, u_s in scored_units[:n_val]:
+                        st.markdown(f"**Score: {u_s:.3f}**")
+                        st.markdown(f"> {u_t}")
+                        st.divider() # Using st.divider() is cleaner than '***'
+
+                    st.markdown(f"**Bottom {n_val} {unit_label}s:**")
+                    for u_t, u_s in scored_units[-n_val:]:
+                        st.markdown(f"**Score: {u_s:.3f}**")
+                        st.markdown(f"> {u_t}")
+                        st.divider()
 
 st.sidebar.divider()
 st.sidebar.info("Query Fan-Out Analyzer | v5.22 | State-Managed & Restored")
