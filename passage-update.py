@@ -21,6 +21,11 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 import textwrap
 from selenium_stealth import stealth
+import json
+
+# Import Google Cloud NLP libraries
+from google.cloud import language_v1
+from google.oauth2 import service_account
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -35,13 +40,16 @@ if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_
 if "openai_api_key_to_persist" not in st.session_state: st.session_state.openai_api_key_to_persist = ""
 if "openai_api_configured" not in st.session_state: st.session_state.openai_api_configured = False
 if "openai_client" not in st.session_state: st.session_state.openai_client = None
-if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'all-mpnet-base-v2'
-# --- NEW: State flag to prevent interruptions ---
+if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'mixedbread-ai/mxbai-embed-large-v1'
 if "processing" not in st.session_state: st.session_state.processing = False
+if "gcp_nlp_configured" not in st.session_state: st.session_state.gcp_nlp_configured = False
+if "gcp_credentials_info" not in st.session_state: st.session_state.gcp_credentials_info = None
+if "entity_analysis_results" not in st.session_state: st.session_state.entity_analysis_results = None
+
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
-# --- RESTORED: Full User Agents List ---
+# ### RESTORED ### - Full User Agents List from your original script
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -91,17 +99,55 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
                 st.error(f"API Key Failed: {str(e)[:200]}")
         else: st.warning("Please enter API Key.")
 
+with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.gcp_nlp_configured):
+    uploaded_gcp_key = st.file_uploader(
+        "Upload Google Cloud Service Account JSON", type="json",
+        help="Upload the JSON key file for a service account with 'Cloud Natural Language API User' role.",
+        disabled=st.session_state.processing
+    )
+    if uploaded_gcp_key is not None:
+        try:
+            credentials_info = json.load(uploaded_gcp_key)
+            if "project_id" in credentials_info and "private_key" in credentials_info:
+                st.session_state.gcp_credentials_info, st.session_state.gcp_nlp_configured = credentials_info, True
+                st.success(f"GCP Key for project '{credentials_info['project_id']}' loaded!")
+            else:
+                st.error("Invalid JSON key file format."); st.session_state.gcp_nlp_configured, st.session_state.gcp_credentials_info = False, None
+        except Exception as e:
+            st.error(f"Failed to process GCP key file: {e}"); st.session_state.gcp_nlp_configured, st.session_state.gcp_credentials_info = False, None
+
 st.sidebar.markdown("---")
 if st.session_state.get("openai_api_configured"): st.sidebar.markdown("✅ OpenAI API: **Configured**")
 else: st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
 if st.session_state.get("gemini_api_configured"): st.sidebar.markdown("✅ Gemini API: **Configured**")
 else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
+if st.session_state.get("gcp_nlp_configured"): st.sidebar.markdown("✅ Google NLP API: **Configured**")
+else: st.sidebar.markdown("⚠️ Google NLP API: **Not Configured**")
 if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
     st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
 if st.session_state.get("gemini_api_key_to_persist"):
     try: genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
     except Exception: st.session_state.gemini_api_configured = False
 
+@st.cache_data(show_spinner="Extracting entities from text...")
+def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
+    if not _credentials_info: st.error("Google Cloud credentials are not configured."); return {}
+    if not text: return {}
+    try:
+        credentials = service_account.Credentials.from_service_account_info(_credentials_info)
+        client = language_v1.LanguageServiceClient(credentials=credentials)
+        max_bytes = 1000000; text_bytes = text.encode('utf-8')
+        if len(text_bytes) > max_bytes:
+            text = text_bytes[:max_bytes].decode('utf-8', 'ignore'); st.warning("Text was truncated to fit Google NLP API size limit.")
+        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
+        response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
+        entities_dict = {}
+        for entity in response.entities:
+            key = entity.name.lower()
+            if key not in entities_dict or entity.salience > entities_dict[key]['salience']:
+                 entities_dict[key] = {'name': entity.name, 'type': language_v1.Entity.Type(entity.type_).name, 'salience': entity.salience, 'mentions': len(entity.mentions)}
+        return entities_dict
+    except Exception as e: st.error(f"Google Cloud NLP API Error: {e}"); return {}
 
 # --- Embedding Functions ---
 @st.cache_resource
@@ -147,6 +193,7 @@ def fetch_content_with_selenium(url, driver_instance):
         except Exception as req_e: st.error(f"Requests fallback also failed for {url}: {req_e}"); return None
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
+# ### RESTORED ### - Original clean_text_for_display function
 def clean_text_for_display(text):
     if not text: return ""
     cleaned_text = re.sub(r'\s+', ' ', text).strip()
@@ -157,6 +204,7 @@ def split_text_into_sentences(text):
     if not text: return []
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
+# ### RESTORED ### - Original, more robust passage extraction logic
 def extract_structural_passages_with_full_text(html_content):
     if not html_content: return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -226,9 +274,10 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{cleaned_sentence}</p>'
     return highlighted_html
 
-# --- RESTORED: Full, detailed Gemini prompt ---
+# ### RESTORED ### - Full, detailed Gemini prompt and robust parsing from your original script
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
+    # ### CORRECTED ### - Using the specific Gemini model from your original script
     model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
@@ -262,7 +311,16 @@ st.markdown("Fetch, clean, analyze web content against initial & AI-generated qu
 
 # --- Sidebar Configuration Widgets (all disabled during processing) ---
 st.sidebar.subheader("🤖 Embedding Model Configuration")
-embedding_model_options = { "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1", "Local: MPNet (Quality Focus)": "all-mpnet-base-v2", "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", "Gemini: embedding-001": "gemini-embedding-001"}
+# ### RESTORED ### - Full list of embedding models including MixedBread
+embedding_model_options = {
+    "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1",
+    "Local: MPNet (Quality Focus)": "all-mpnet-base-v2",
+    "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2",
+    "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1",
+    "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small",
+    "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large",
+    "Gemini: embedding-001": "gemini-embedding-001"
+}
 selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", options=list(embedding_model_options.keys()), index=0, disabled=st.session_state.processing)
 st.session_state.selected_embedding_model = embedding_model_options[selected_embedding_label]
 st.sidebar.subheader("📄 Text Extraction & Processing")
@@ -274,12 +332,15 @@ input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste R
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering", disabled=st.session_state.processing)
 if input_mode == "Fetch from URLs":
     urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr", height=100, disabled=st.session_state.processing)
-    use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.", disabled=st.session_state.processing)
-    st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.", disabled=st.session_state.processing)
+    run_entity_gap_analysis = st.sidebar.checkbox(
+        "☑️ Run Entity Gap Analysis", value=False,
+        help="Requires Google Cloud NLP to be configured. Extracts entities to find content gaps.",
+        disabled=(st.session_state.processing or not st.session_state.gcp_nlp_configured)
+    )
 else:
     pasted_content_label = st.sidebar.text_input("Content Label:", value="Pasted Content", disabled=st.session_state.processing)
     pasted_content_text = st.sidebar.text_area("Paste content here:", height=200, disabled=st.session_state.processing)
-    urls_text_area_val, use_trafilatura_opt = "", False
+    urls_text_area_val, run_entity_gap_analysis = "", False
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", 3, 50, 5, disabled=st.session_state.processing)
 if analysis_granularity.startswith("Passage"):
     st.sidebar.subheader("Passage Context Settings")
@@ -287,12 +348,12 @@ if analysis_granularity.startswith("Passage"):
 else: s_overlap_val = 0
 analyze_disabled = not (st.session_state.get("gemini_api_configured", False) or st.session_state.get("openai_api_configured", False))
 
-# --- REFACTORED: Button now just sets the processing flag ---
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=st.session_state.processing or analyze_disabled):
     st.session_state.processing = True
+    st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis
     st.rerun()
 
-# --- REFACTORED: All processing happens inside this block, controlled by the flag ---
+# --- REFACTORED: Main processing block ---
 if st.session_state.processing:
     try:
         jobs = []
@@ -301,6 +362,7 @@ if st.session_state.processing:
             if not urls_text_area_val: st.warning("Please enter URLs."); st.stop()
             jobs = [{'type': 'url', 'identifier': url.strip()} for url in urls_text_area_val.split('\n') if url.strip()]
         else:
+            st.warning("Entity Gap Analysis is only available for URL mode."); st.session_state.run_entity_gap_analysis_flag = False
             if not pasted_content_text: st.warning("Please paste content."); st.stop()
             jobs.append({'type': 'paste', 'identifier': pasted_content_label or "Pasted Content", 'content': pasted_content_text})
         
@@ -311,6 +373,7 @@ if st.session_state.processing:
         
         st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
         st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
+        st.session_state.entity_analysis_results = None
         
         if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
             with st.spinner("Initializing Selenium WebDriver..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
@@ -335,11 +398,9 @@ if st.session_state.processing:
             for identifier, content in fetched_content.items():
                 st.markdown(f"--- \n#### Processing: {identifier}")
                 if not content or len(content.strip()) < 20: st.warning(f"Insufficient text from {identifier}. Skipping."); continue
-                
                 is_url_source = any(job['identifier'] == identifier for job in jobs if job['type'] == 'url')
                 raw_html_for_highlighting = content if is_url_source else "".join([f"<p>{clean_text_for_display(p)}</p>" for p in content.split('\n\n')])
                 
-                # --- BUG FIX: Correctly handle text extraction for sentence mode ---
                 if analysis_granularity.startswith("Sentence"):
                     _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
                     units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
@@ -362,20 +423,33 @@ if st.session_state.processing:
                     unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
                     local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
                     for sq_idx, query_text in enumerate(local_all_queries):
-                        current_q_unit_sims = unit_q_sims[:, sq_idx]; max_sim_passage_text = ""
-                        if current_q_unit_sims.size > 0: max_sim_idx = np.argmax(current_q_unit_sims); max_sim_passage_text = units_for_display[max_sim_idx]
-                        local_all_metrics.append({ "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx], "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, "Num Units": len(units_for_display), "Max Similarity Passage": max_sim_passage_text })
+                        max_sim_passage_text = ""
+                        if unit_q_sims[:, sq_idx].size > 0: max_sim_idx = np.argmax(unit_q_sims[:, sq_idx]); max_sim_passage_text = units_for_display[max_sim_idx]
+                        local_all_metrics.append({ "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx], "Max Unit Sim.": np.max(unit_q_sims[:, sq_idx]) if unit_q_sims[:, sq_idx].size > 0 else 0.0, "Avg. Unit Sim.": np.mean(unit_q_sims[:, sq_idx]) if unit_q_sims[:, sq_idx].size > 0 else 0.0, "Num Units": len(units_for_display), "Max Similarity Passage": max_sim_passage_text })
         
         if local_all_metrics:
             st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = local_all_metrics, local_processed_units_data
             st.session_state.all_queries_for_analysis, st.session_state.analysis_done = local_all_queries, True
             st.session_state.last_analysis_granularity = analysis_granularity
 
+        if st.session_state.get('run_entity_gap_analysis_flag'):
+            if not st.session_state.gcp_nlp_configured: st.warning("Entity Gap Analysis was skipped because Google Cloud NLP is not configured.")
+            elif input_mode != "Fetch from URLs" or len(jobs) < 2: st.warning("Entity Gap Analysis requires at least two URLs to compare.")
+            else:
+                entity_results = {}
+                with st.spinner("Performing Entity Analysis on all URLs..."):
+                    for identifier, data in st.session_state.url_processed_units_dict.items():
+                        full_text = data.get("page_text_for_highlight", "")
+                        if full_text:
+                            entities = extract_entities_with_google_nlp(full_text, st.session_state.gcp_credentials_info)
+                            entity_results[identifier] = entities
+                st.session_state.entity_analysis_results = entity_results
+
     finally:
         st.session_state.processing = False
         st.rerun()
 
-# --- Results Display Section (unchanged from original) ---
+# --- Results Display Section ---
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
     st.subheader("Analysed Queries (Initial + Synthetic)"); st.expander("View All Analysed Queries").json([q.replace("Initial: ", "(Initial) ") for q in st.session_state.all_queries_for_analysis])
     unit_label = "Sentence" if st.session_state.last_analysis_granularity.startswith("Sentence") else "Passage"
@@ -406,24 +480,36 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 if st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{key_base}_{query_idx}"):
                     with st.spinner("Highlighting..."):
                         unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
-                        if st.session_state.last_analysis_granularity.startswith("Passage"):
-                            highlighted_html = render_safe_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
-                        else:
-                            highlighted_html = get_sentence_highlighted_html_flat(p_data["page_text_for_highlight"], unit_scores_for_query)
+                        if st.session_state.last_analysis_granularity.startswith("Passage"): highlighted_html = render_safe_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
+                        else: highlighted_html = get_sentence_highlighted_html_flat(p_data["page_text_for_highlight"], unit_scores_for_query)
                         st.markdown(highlighted_html, unsafe_allow_html=True)
                 if st.checkbox(f"Show top/bottom {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{key_base}_{query_idx}"):
                     n_val = st.slider("N:", 1, 10, 3, key=f"sl_tb_{key_base}_{query_idx}")
-                    st.markdown(f"**Top {n_val} {unit_label}s:**")
-                    for u_t, u_s in scored_units[:n_val]:
-                        st.markdown(f"**Score: {u_s:.3f}**")
-                        st.markdown(f"> {u_t}")
-                        st.divider() # Using st.divider() is cleaner than '***'
+                    st.markdown(f"**Top {n_val} {unit_label}s:**"); [st.markdown(f"**Score: {u_s:.3f}**\n\n> {u_t}\n\n---") for u_t, u_s in scored_units[:n_val]]
+                    st.markdown(f"**Bottom {n_val} {unit_label}s:**"); [st.markdown(f"**Score: {u_s:.3f}**\n\n> {u_t}\n\n---") for u_t, u_s in scored_units[-n_val:]]
 
-                    st.markdown(f"**Bottom {n_val} {unit_label}s:**")
-                    for u_t, u_s in scored_units[-n_val:]:
-                        st.markdown(f"**Score: {u_s:.3f}**")
-                        st.markdown(f"> {u_t}")
-                        st.divider()
+if st.session_state.get("entity_analysis_results"):
+    st.markdown("---")
+    with st.expander("🔎 Entity Gap Analysis", expanded=True):
+        results = st.session_state.entity_analysis_results
+        url_options = list(results.keys())
+        if len(url_options) < 2: st.info("Entity Gap Analysis requires at least two URLs to compare.")
+        else:
+            primary_url = st.selectbox("Select your Primary URL to check for missing entities:", options=url_options, index=0, key="primary_url_selector")
+            if primary_url:
+                primary_entities = set(results[primary_url].keys()); st.write(f"Found **{len(primary_entities)}** unique entities on `{primary_url}`.")
+                competitor_entities_map = {}
+                for url, entities_data in results.items():
+                    if url != primary_url:
+                        for entity_key, entity_info in entities_data.items():
+                            if entity_key not in competitor_entities_map: competitor_entities_map[entity_key] = {'info': entity_info, 'found_on': []}
+                            competitor_entities_map[entity_key]['found_on'].append(url)
+                missing_entities = [{'Entity': data['info']['name'], 'Type': data['info']['type'], 'Salience': data['info']['salience'], 'Found On (Competitors)': ", ".join([f"`{os.path.basename(u)}`" for u in data['found_on']])} for entity_key, data in competitor_entities_map.items() if entity_key not in primary_entities]
+                if not missing_entities: st.success(f"✅ **No Gaps Found!** Your primary URL covers all entities found on the competitor pages.")
+                else:
+                    st.subheader(f"❗️ Found {len(missing_entities)} entities present in other URLs but MISSING from your page:")
+                    df_missing = pd.DataFrame(missing_entities).sort_values(by='Salience', ascending=False).reset_index(drop=True)
+                    st.dataframe(df_missing, use_container_width=True, column_config={"Salience": st.column_config.ProgressColumn("Salience (Importance)", format="%.3f", min_value=0, max_value=1)})
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.22 | State-Managed & Restored")
+st.sidebar.info("Query Fan-Out Analyzer | v5.24 | Features Restored")
