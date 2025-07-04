@@ -14,3 +14,4 @@ selenium  # <-- Add this
 trafilatura
 openai
 selenium-stealth
+google-cloud-language
