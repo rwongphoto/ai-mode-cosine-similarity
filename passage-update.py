@@ -333,7 +333,7 @@ initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of 
 if input_mode == "Fetch from URLs":
     urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr", height=100, disabled=st.session_state.processing)
     run_entity_gap_analysis = st.sidebar.checkbox(
-        "☑️ Run Entity Gap Analysis", value=False,
+        "Run Entity Gap Analysis", value=False,
         help="Requires Google Cloud NLP to be configured. Extracts entities to find content gaps.",
         disabled=(st.session_state.processing or not st.session_state.gcp_nlp_configured)
     )
