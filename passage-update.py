@@ -368,7 +368,7 @@ if input_mode == "Fetch from URLs":
     use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction.", disabled=st.session_state.processing)
     trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text.", disabled=st.session_state.processing)
     run_entity_gap_analysis = st.sidebar.checkbox(
-        "☑️ Run Entity Gap Analysis", value=False,
+        "Run Entity Gap Analysis", value=False,
         help="Requires Google Cloud NLP to be configured.",
         disabled=(st.session_state.processing or not st.session_state.gcp_nlp_configured)
     )
