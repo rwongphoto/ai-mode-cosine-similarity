@@ -580,7 +580,7 @@ if st.session_state.get("entity_analysis_results"):
                             'Entity': data['info']['name'],
                             'Type': data['info']['type'],
                             'Salience': data['info']['salience'],
-                            'Found On (Competitors)': ", ".join([f"`{os.path.basename(u)}`" for u in data['found_on']])
+                            'Found On (Competitors)': ", ".join([f"`{u}`" for u in data['found_on']])
                         })
                 
                 if not missing_entities:
