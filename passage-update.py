@@ -355,28 +355,34 @@ st.sidebar.divider()
 st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"), disabled=st.session_state.processing)
 initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering", disabled=st.session_state.processing)
+
+# ### FIXED ### Initialize variables with defaults before the conditional block
+use_trafilatura_opt = False
+trafilatura_favor_recall = False
+run_entity_gap_analysis = False
+pasted_content_text = ""
+urls_text_area_val = ""
+
 if input_mode == "Fetch from URLs":
     urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr", height=100, disabled=st.session_state.processing)
-    use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.", disabled=st.session_state.processing)
-    st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.", disabled=st.session_state.processing)
+    use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction.", disabled=st.session_state.processing)
+    trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text.", disabled=st.session_state.processing)
     run_entity_gap_analysis = st.sidebar.checkbox(
         "☑️ Run Entity Gap Analysis", value=False,
-        help="Requires Google Cloud NLP to be configured. Extracts entities to find content gaps.",
+        help="Requires Google Cloud NLP to be configured.",
         disabled=(st.session_state.processing or not st.session_state.gcp_nlp_configured)
     )
-else:
+else: # Pasted Text Mode
+    pasted_content_label = st.sidebar.text_input("Content Label:", value="Pasted Content", disabled=st.session_state.processing)
     pasted_content_text = st.sidebar.text_area("Paste content here:", height=200, disabled=st.session_state.processing)
-    urls_text_area_val = ""
-    run_entity_gap_analysis = False # Disable for pasted text mode
 
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", 3, 50, 5, disabled=st.session_state.processing)
 if analysis_granularity.startswith("Passage"):
     st.sidebar.subheader("Passage Context Settings")
-    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, help="For each core passage, include N sentences from adjacent passages for contextual similarity calculation. This overlap is NOT shown in the results display.", disabled=st.session_state.processing)
+    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, help="Contextual overlap for similarity calculation.", disabled=st.session_state.processing)
 else: s_overlap_val = 0
 analyze_disabled = not (st.session_state.get("gemini_api_configured", False) or st.session_state.get("openai_api_configured", False))
 
-# ### FIXED ### - Single, consolidated button with a unique key
 if st.sidebar.button("🚀 Analyze Content", key="analyze_button", type="primary", disabled=st.session_state.processing or analyze_disabled):
     st.session_state.processing = True
     st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis
