@@ -21,10 +21,6 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 import textwrap
 from selenium_stealth import stealth
-import json
-
-from google.cloud import language_v1
-from google.oauth2 import service_account
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -39,16 +35,13 @@ if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_
 if "openai_api_key_to_persist" not in st.session_state: st.session_state.openai_api_key_to_persist = ""
 if "openai_api_configured" not in st.session_state: st.session_state.openai_api_configured = False
 if "openai_client" not in st.session_state: st.session_state.openai_client = None
-if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'mixedbread-ai/mxbai-embed-large-v1'
+if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'all-mpnet-base-v2'
+# --- NEW: State flag to prevent interruptions ---
 if "processing" not in st.session_state: st.session_state.processing = False
-if "gcp_nlp_configured" not in st.session_state: st.session_state.gcp_nlp_configured = False
-if "gcp_credentials_info" not in st.session_state: st.session_state.gcp_credentials_info = None
-if "entity_analysis_results" not in st.session_state: st.session_state.entity_analysis_results = None
-
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
-# ### RESTORED ### - Full User Agents List from your original script
+# --- RESTORED: Full User Agents List ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
@@ -98,55 +91,17 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
                 st.error(f"API Key Failed: {str(e)[:200]}")
         else: st.warning("Please enter API Key.")
 
-with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.gcp_nlp_configured):
-    uploaded_gcp_key = st.file_uploader(
-        "Upload Google Cloud Service Account JSON", type="json",
-        help="Upload the JSON key file for a service account with 'Cloud Natural Language API User' role.",
-        disabled=st.session_state.processing
-    )
-    if uploaded_gcp_key is not None:
-        try:
-            credentials_info = json.load(uploaded_gcp_key)
-            if "project_id" in credentials_info and "private_key" in credentials_info:
-                st.session_state.gcp_credentials_info, st.session_state.gcp_nlp_configured = credentials_info, True
-                st.success(f"GCP Key for project '{credentials_info['project_id']}' loaded!")
-            else:
-                st.error("Invalid JSON key file format."); st.session_state.gcp_nlp_configured, st.session_state.gcp_credentials_info = False, None
-        except Exception as e:
-            st.error(f"Failed to process GCP key file: {e}"); st.session_state.gcp_nlp_configured, st.session_state.gcp_credentials_info = False, None
-
 st.sidebar.markdown("---")
 if st.session_state.get("openai_api_configured"): st.sidebar.markdown("✅ OpenAI API: **Configured**")
 else: st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
 if st.session_state.get("gemini_api_configured"): st.sidebar.markdown("✅ Gemini API: **Configured**")
 else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
-if st.session_state.get("gcp_nlp_configured"): st.sidebar.markdown("✅ Google NLP API: **Configured**")
-else: st.sidebar.markdown("⚠️ Google NLP API: **Not Configured**")
 if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
     st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
 if st.session_state.get("gemini_api_key_to_persist"):
     try: genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
     except Exception: st.session_state.gemini_api_configured = False
 
-@st.cache_data(show_spinner="Extracting entities from text...")
-def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
-    if not _credentials_info: st.error("Google Cloud credentials are not configured."); return {}
-    if not text: return {}
-    try:
-        credentials = service_account.Credentials.from_service_account_info(_credentials_info)
-        client = language_v1.LanguageServiceClient(credentials=credentials)
-        max_bytes = 1000000; text_bytes = text.encode('utf-8')
-        if len(text_bytes) > max_bytes:
-            text = text_bytes[:max_bytes].decode('utf-8', 'ignore'); st.warning("Text was truncated to fit Google NLP API size limit.")
-        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_Text)
-        response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
-        entities_dict = {}
-        for entity in response.entities:
-            key = entity.name.lower()
-            if key not in entities_dict or entity.salience > entities_dict[key]['salience']:
-                 entities_dict[key] = {'name': entity.name, 'type': language_v1.Entity.Type(entity.type_).name, 'salience': entity.salience, 'mentions': len(entity.mentions)}
-        return entities_dict
-    except Exception as e: st.error(f"Google Cloud NLP API Error: {e}"); return {}
 
 # --- Embedding Functions ---
 @st.cache_resource
@@ -192,84 +147,42 @@ def fetch_content_with_selenium(url, driver_instance):
         except Exception as req_e: st.error(f"Requests fallback also failed for {url}: {req_e}"); return None
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
-
 def clean_text_for_display(text):
     if not text: return ""
     cleaned_text = re.sub(r'\s+', ' ', text).strip()
     cleaned_text = re.sub(r'([.?!])([a-zA-Z])', r'\1 \2', cleaned_text)
     cleaned_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', cleaned_text)
     return cleaned_text
-
 def split_text_into_sentences(text):
     if not text: return []
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
-
-# ### REWRITTEN ### - New, robust passage extraction logic
-def extract_structural_passages_with_full_text(html_content, use_trafilatura=True, favor_recall=False):
+def extract_structural_passages_with_full_text(html_content):
     if not html_content: return [], ""
-    soup_input = html_content
-    if use_trafilatura:
-        cleaned_html = trafilatura.extract(
-            html_content, include_comments=False, output_format='xml', favor_recall=favor_recall
-        )
-        if cleaned_html:
-            soup_input = cleaned_html
-        else:
-            st.warning("Trafilatura extracted no content, falling back to raw HTML.")
-
-    soup = BeautifulSoup(soup_input, 'lxml')
+    soup = BeautifulSoup(html_content, 'html.parser')
     for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']):
         if el.name: el.decompose()
-
-    full_text = clean_text_for_display(soup.get_text(separator=' '))
-    
-    all_passages = []
-    current_passage_parts = []
-    
-    # Define tags that signify content blocks
+    selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
+    for sel in selectors:
+        try:
+            for element in soup.select(sel):
+                if not any(p.name in ['main', 'article', 'body'] for p in element.parents): element.decompose()
+        except Exception: pass
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     content_elements = soup.find_all(target_tags)
-
-    for element in content_elements:
-        # A heading marks the end of the previous passage and the start of a new one.
-        if element.name.startswith('h'):
-            if current_passage_parts:
-                passage_text = " ".join(current_passage_parts)
-                if passage_text.strip():
-                    all_passages.append(clean_text_for_display(passage_text))
-                current_passage_parts = []
-        
-        # Process the current element's text
-        text_to_add = ''
-        if element.name == 'table':
-            rows = element.find_all('tr')
-            table_text = ". ".join(
-                " | ".join(cell.get_text(separator=' ', strip=True) for cell in row.find_all(['td', 'th']))
-                for row in rows
-            )
-            text_to_add = table_text
-        elif element.name in ['ul', 'ol']:
-            items = element.find_all('li')
-            list_text = " ".join(f"* {item.get_text(separator=' ', strip=True)}" for item in items)
-            text_to_add = list_text
-        else: # For <p> and <h> tags
-            text_to_add = element.get_text(separator=' ', strip=True)
-
-        if text_to_add:
-            current_passage_parts.append(text_to_add)
-
-    # Add the last remaining passage after the loop finishes
-    if current_passage_parts:
-        passage_text = " ".join(current_passage_parts)
-        if passage_text.strip():
-            all_passages.append(clean_text_for_display(passage_text))
-            
-    # Filter out any passages that are too short after cleaning
-    final_passages = [p for p in all_passages if p and len(p.split()) > 5]
-
+    merged_passages, i = [], 0
+    while i < len(content_elements):
+        current_element, current_text = content_elements[i], content_elements[i].get_text(separator=' ', strip=True)
+        if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
+            next_text = content_elements[i+1].get_text(separator=' ', strip=True); combined_text = f"{current_text}. {next_text}"
+            if combined_text.strip(): merged_passages.append(combined_text)
+            i += 2
+        else:
+            if current_text.strip(): merged_passages.append(current_text)
+            i += 1
+    final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
+    full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
-
 def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
     if not structural_passages or overlap_count == 0: return structural_passages
     def _get_n_sentences(text, n, from_start=True):
@@ -282,10 +195,9 @@ def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
         current_passage, prefix, suffix = structural_passages[i], _get_n_sentences(structural_passages[i-1], overlap_count, from_start=False) if i > 0 else "", _get_n_sentences(structural_passages[i+1], overlap_count, from_start=True) if i < num_passages - 1 else ""
         expanded_passages.append(" ".join(filter(None, [prefix, current_passage, suffix])))
     return [p for p in expanded_passages if p.strip()]
-
 def render_safe_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: return "<p>Could not generate highlighted HTML.</p>"
-    soup = BeautifulSoup(html_content, 'lxml')
+    soup = BeautifulSoup(html_content, 'html.parser')
     tags_to_remove = ["script", "style", "noscript", "iframe", "link", "meta", "button", "a", "img", "svg", "video", "audio", "canvas", "figure", "figcaption", 'form', 'nav', 'header', 'footer', 'aside', 'menu', 'banner', 'dialog']
     for tag in tags_to_remove:
         for el in soup.find_all(tag): el.decompose()
@@ -302,7 +214,6 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
             html_parts.append(f"<{element.name} style='{style}'>{list_items_html}</{element.name}>")
         else: html_parts.append(f"<{element.name} style='{style}'>{element_text}</{element.name}>")
     return "".join(html_parts)
-
 def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     if not page_text_content or not unit_scores_map: return "<p>No content to highlight.</p>"
     sentences = split_text_into_sentences(page_text_content)
@@ -315,6 +226,7 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{cleaned_sentence}</p>'
     return highlighted_html
 
+# --- RESTORED: Full, detailed Gemini prompt ---
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
     model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
@@ -348,23 +260,14 @@ def generate_synthetic_queries(user_query, num_queries=7):
 st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 
-# --- Sidebar Configuration Widgets ---
+# --- Sidebar Configuration Widgets (all disabled during processing) ---
 st.sidebar.subheader("🤖 Embedding Model Configuration")
-embedding_model_options = {
-    "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1",
-    "Local: MPNet (Quality Focus)": "all-mpnet-base-v2",
-    "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2",
-    "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1",
-    "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small",
-    "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large",
-    "Gemini: embedding-001": "gemini-embedding-001"
-}
+embedding_model_options = { "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1", "Local: MPNet (Quality Focus)": "all-mpnet-base-v2", "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", "Gemini: embedding-001": "gemini-embedding-001"}
 selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", options=list(embedding_model_options.keys()), index=0, disabled=st.session_state.processing)
 st.session_state.selected_embedding_model = embedding_model_options[selected_embedding_label]
 st.sidebar.subheader("📄 Text Extraction & Processing")
 analysis_granularity = st.sidebar.selectbox("Analysis Granularity:", ("Passage-based (HTML Tags)", "Sentence-based"), index=0, disabled=st.session_state.processing)
 use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching (for URL mode)", value=True, disabled=st.session_state.processing)
-
 st.sidebar.divider()
 st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"), disabled=st.session_state.processing)
@@ -372,17 +275,11 @@ initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of 
 if input_mode == "Fetch from URLs":
     urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr", height=100, disabled=st.session_state.processing)
     use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.", disabled=st.session_state.processing)
-    trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.", disabled=st.session_state.processing)
-    run_entity_gap_analysis = st.sidebar.checkbox(
-        "☑️ Run Entity Gap Analysis", value=False,
-        help="Requires Google Cloud NLP to be configured. Extracts entities to find content gaps.",
-        disabled=(st.session_state.processing or not st.session_state.gcp_nlp_configured)
-    )
+    st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.", disabled=st.session_state.processing)
 else:
     pasted_content_label = st.sidebar.text_input("Content Label:", value="Pasted Content", disabled=st.session_state.processing)
     pasted_content_text = st.sidebar.text_area("Paste content here:", height=200, disabled=st.session_state.processing)
-    urls_text_area_val, use_trafilatura_opt, trafilatura_favor_recall, run_entity_gap_analysis = "", False, False, False
-
+    urls_text_area_val, use_trafilatura_opt = "", False
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", 3, 50, 5, disabled=st.session_state.processing)
 if analysis_granularity.startswith("Passage"):
     st.sidebar.subheader("Passage Context Settings")
@@ -390,14 +287,12 @@ if analysis_granularity.startswith("Passage"):
 else: s_overlap_val = 0
 analyze_disabled = not (st.session_state.get("gemini_api_configured", False) or st.session_state.get("openai_api_configured", False))
 
+# --- REFACTORED: Button now just sets the processing flag ---
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=st.session_state.processing or analyze_disabled):
     st.session_state.processing = True
-    st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis
-    st.session_state.use_trafilatura_opt = use_trafilatura_opt
-    st.session_state.trafilatura_favor_recall = trafilatura_favor_recall
     st.rerun()
 
-# --- Main processing block ---
+# --- REFACTORED: All processing happens inside this block, controlled by the flag ---
 if st.session_state.processing:
     try:
         jobs = []
@@ -406,19 +301,16 @@ if st.session_state.processing:
             if not urls_text_area_val: st.warning("Please enter URLs."); st.stop()
             jobs = [{'type': 'url', 'identifier': url.strip()} for url in urls_text_area_val.split('\n') if url.strip()]
         else:
-            st.warning("Entity Gap Analysis & Trafilatura are only available for URL mode."); st.session_state.run_entity_gap_analysis_flag = False
             if not pasted_content_text: st.warning("Please paste content."); st.stop()
             jobs.append({'type': 'paste', 'identifier': pasted_content_label or "Pasted Content", 'content': pasted_content_text})
         
         local_embedding_model_instance = None
         if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
-            with st.spinner(f"Loading local model '{st.session_state.selected_embedding_model}'..."):
-                local_embedding_model_instance = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
+            with st.spinner(f"Loading local model..."): local_embedding_model_instance = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
             if not local_embedding_model_instance: st.stop()
         
         st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
         st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
-        st.session_state.entity_analysis_results = None
         
         if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
             with st.spinner("Initializing Selenium WebDriver..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
@@ -427,8 +319,7 @@ if st.session_state.processing:
         local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
         
         with st.spinner("Embedding all queries..."): local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
-        if local_all_query_embs.size == 0: st.error("Query embedding failed. Halting analysis."); st.stop()
-        initial_query_embedding = local_all_query_embs[0].reshape(1, -1)
+        initial_query_embedding = local_all_query_embs[0]
         
         local_all_metrics, local_processed_units_data = [], {}
         fetched_content = {}
@@ -444,63 +335,47 @@ if st.session_state.processing:
             for identifier, content in fetched_content.items():
                 st.markdown(f"--- \n#### Processing: {identifier}")
                 if not content or len(content.strip()) < 20: st.warning(f"Insufficient text from {identifier}. Skipping."); continue
+                
                 is_url_source = any(job['identifier'] == identifier for job in jobs if job['type'] == 'url')
                 raw_html_for_highlighting = content if is_url_source else "".join([f"<p>{clean_text_for_display(p)}</p>" for p in content.split('\n\n')])
                 
+                # --- BUG FIX: Correctly handle text extraction for sentence mode ---
                 if analysis_granularity.startswith("Sentence"):
-                    _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting, use_trafilatura=False) # No need for complex passages here
-                    units_for_embedding = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
-                    units_for_display = units_for_embedding
+                    _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
+                    units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
+                    units_for_embedding = units_for_display
                 else: # Passage-based
-                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(
-                        raw_html_for_highlighting,
-                        use_trafilatura=st.session_state.get('use_trafilatura_opt', False) and is_url_source,
-                        favor_recall=st.session_state.get('trafilatura_favor_recall', False)
-                    )
+                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
                     units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
+                    if not units_for_display and page_text_for_highlight: units_for_display = [page_text_for_highlight]
 
-                if not units_for_embedding: 
-                    if not units_for_display:
-                        st.warning(f"No processable content units found for {identifier}. Skipping."); continue
-                    units_for_embedding = units_for_display # Fallback for overlap mode if no overlap can be created
+                if not units_for_embedding: st.warning(f"No processable content units found for {identifier}. Skipping."); continue
                 
                 unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
                 local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight, "raw_html": raw_html_for_highlighting}
                 
                 if unit_embeddings.size > 0:
-                    unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding).flatten()
+                    unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
                     weights = np.maximum(0, unit_sims_to_initial)
                     weighted_overall_emb = np.average(unit_embeddings, axis=0, weights=weights if np.sum(weights) > 1e-6 else None).reshape(1, -1)
                     overall_sims = cosine_similarity(weighted_overall_emb, local_all_query_embs)[0]
                     unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
                     local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
                     for sq_idx, query_text in enumerate(local_all_queries):
-                        max_sim_passage_text = ""
-                        if unit_q_sims[:, sq_idx].size > 0: max_sim_idx = np.argmax(unit_q_sims[:, sq_idx]); max_sim_passage_text = units_for_display[max_sim_idx]
-                        local_all_metrics.append({ "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx], "Max Unit Sim.": np.max(unit_q_sims[:, sq_idx]) if unit_q_sims[:, sq_idx].size > 0 else 0.0, "Avg. Unit Sim.": np.mean(unit_q_sims[:, sq_idx]) if unit_q_sims[:, sq_idx].size > 0 else 0.0, "Num Units": len(units_for_display), "Max Similarity Passage": max_sim_passage_text })
+                        current_q_unit_sims = unit_q_sims[:, sq_idx]; max_sim_passage_text = ""
+                        if current_q_unit_sims.size > 0: max_sim_idx = np.argmax(current_q_unit_sims); max_sim_passage_text = units_for_display[max_sim_idx]
+                        local_all_metrics.append({ "URL": identifier, "Query": query_text, "Overall Similarity (Weighted)": overall_sims[sq_idx], "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, "Num Units": len(units_for_display), "Max Similarity Passage": max_sim_passage_text })
         
         if local_all_metrics:
             st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = local_all_metrics, local_processed_units_data
             st.session_state.all_queries_for_analysis, st.session_state.analysis_done = local_all_queries, True
             st.session_state.last_analysis_granularity = analysis_granularity
 
-        if st.session_state.get('run_entity_gap_analysis_flag'):
-            if not st.session_state.gcp_nlp_configured: st.warning("Entity Gap Analysis was skipped because Google Cloud NLP is not configured.")
-            elif input_mode != "Fetch from URLs" or len(jobs) < 2: st.warning("Entity Gap Analysis requires at least two URLs to compare.")
-            else:
-                entity_results = {}
-                with st.spinner("Performing Entity Analysis on all URLs..."):
-                    for identifier, data in st.session_state.url_processed_units_dict.items():
-                        full_text = data.get("page_text_for_highlight", "")
-                        if full_text:
-                            entities = extract_entities_with_google_nlp(full_text, st.session_state.gcp_credentials_info)
-                            entity_results[identifier] = entities
-                st.session_state.entity_analysis_results = entity_results
     finally:
         st.session_state.processing = False
         st.rerun()
 
-# --- Results Display Section ---
+# --- Results Display Section (unchanged from original) ---
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
     st.subheader("Analysed Queries (Initial + Synthetic)"); st.expander("View All Analysed Queries").json([q.replace("Initial: ", "(Initial) ") for q in st.session_state.all_queries_for_analysis])
     unit_label = "Sentence" if st.session_state.last_analysis_granularity.startswith("Sentence") else "Passage"
@@ -513,8 +388,7 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. All Queries")
     for item_idx, (identifier, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
         with st.expander(f"Heatmap & Details for: {identifier}", expanded=(item_idx==0)):
-            if p_data.get("unit_similarities") is None or p_data.get("units") is None or not p_data["units"]:
-                st.write(f"No {unit_label.lower()} similarity data available for this source."); continue
+            if p_data.get("unit_similarities") is None: st.write(f"No {unit_label.lower()} similarity data."); continue
             unit_sims, units, all_queries = p_data["unit_similarities"], p_data["units"], st.session_state.all_queries_for_analysis
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
@@ -532,8 +406,10 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 if st.checkbox(f"Show highlighted text for '{query_display_name}'?", key=f"cb_hl_{key_base}_{query_idx}"):
                     with st.spinner("Highlighting..."):
                         unit_scores_for_query = {unit_text: score for unit_text, score in scored_units}
-                        if st.session_state.last_analysis_granularity.startswith("Passage"): highlighted_html = render_safe_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
-                        else: highlighted_html = get_sentence_highlighted_html_flat(p_data["page_text_for_highlight"], unit_scores_for_query)
+                        if st.session_state.last_analysis_granularity.startswith("Passage"):
+                            highlighted_html = render_safe_highlighted_html(p_data.get("raw_html"), unit_scores_for_query)
+                        else:
+                            highlighted_html = get_sentence_highlighted_html_flat(p_data["page_text_for_highlight"], unit_scores_for_query)
                         st.markdown(highlighted_html, unsafe_allow_html=True)
                 if st.checkbox(f"Show top/bottom {unit_label.lower()}s for '{query_display_name}'?", key=f"cb_tb_{key_base}_{query_idx}"):
                     n_val = st.slider("N:", 1, 10, 3, key=f"sl_tb_{key_base}_{query_idx}")
@@ -541,7 +417,7 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                     for u_t, u_s in scored_units[:n_val]:
                         st.markdown(f"**Score: {u_s:.3f}**")
                         st.markdown(f"> {u_t}")
-                        st.divider()
+                        st.divider() # Using st.divider() is cleaner than '***'
 
                     st.markdown(f"**Bottom {n_val} {unit_label}s:**")
                     for u_t, u_s in scored_units[-n_val:]:
@@ -549,28 +425,5 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                         st.markdown(f"> {u_t}")
                         st.divider()
 
-if st.session_state.get("entity_analysis_results"):
-    st.markdown("---")
-    with st.expander("🔎 Entity Gap Analysis", expanded=True):
-        results = st.session_state.entity_analysis_results
-        url_options = list(results.keys())
-        if len(url_options) < 2: st.info("Entity Gap Analysis requires at least two URLs to compare.")
-        else:
-            primary_url = st.selectbox("Select your Primary URL to check for missing entities:", options=url_options, index=0, key="primary_url_selector")
-            if primary_url:
-                primary_entities = set(results[primary_url].keys()); st.write(f"Found **{len(primary_entities)}** unique entities on `{primary_url}`.")
-                competitor_entities_map = {}
-                for url, entities_data in results.items():
-                    if url != primary_url:
-                        for entity_key, entity_info in entities_data.items():
-                            if entity_key not in competitor_entities_map: competitor_entities_map[entity_key] = {'info': entity_info, 'found_on': []}
-                            competitor_entities_map[entity_key]['found_on'].append(url)
-                missing_entities = [{'Entity': data['info']['name'], 'Type': data['info']['type'], 'Salience': data['info']['salience'], 'Found On (Competitors)': ", ".join([f"`{os.path.basename(u)}`" for u in data['found_on']])} for entity_key, data in competitor_entities_map.items() if entity_key not in primary_entities]
-                if not missing_entities: st.success(f"✅ **No Gaps Found!** Your primary URL covers all entities found on the competitor pages.")
-                else:
-                    st.subheader(f"❗️ Found {len(missing_entities)} entities present in other URLs but MISSING from your page:")
-                    df_missing = pd.DataFrame(missing_entities).sort_values(by='Salience', ascending=False).reset_index(drop=True)
-                    st.dataframe(df_missing, use_container_width=True, column_config={"Salience": st.column_config.ProgressColumn("Salience (Importance)", format="%.3f", min_value=0, max_value=1)})
-
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.28 | Passage Logic Restored")
+st.sidebar.info("Query Fan-Out Analyzer | v5.22 | State-Managed & Restored")
