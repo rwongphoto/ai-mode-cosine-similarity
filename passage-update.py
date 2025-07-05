@@ -138,7 +138,7 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
         max_bytes = 1000000; text_bytes = text.encode('utf-8')
         if len(text_bytes) > max_bytes:
             text = text_bytes[:max_bytes].decode('utf-8', 'ignore'); st.warning("Text was truncated to fit Google NLP API size limit.")
-        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
+        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_Text)
         response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
         entities_dict = {}
         for entity in response.entities:
@@ -193,7 +193,6 @@ def fetch_content_with_selenium(url, driver_instance):
 def fetch_content_with_requests(url):
     enforce_rate_limit(); headers={'User-Agent':get_random_user_agent()}; resp=requests.get(url,timeout=20,headers=headers); resp.raise_for_status(); return resp.text
 
-# ### RESTORED ### - Original clean_text_for_display function
 def clean_text_for_display(text):
     if not text: return ""
     cleaned_text = re.sub(r'\s+', ' ', text).strip()
@@ -206,6 +205,7 @@ def split_text_into_sentences(text):
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
 
+# ### REWRITTEN ### - New, robust passage extraction logic
 def extract_structural_passages_with_full_text(html_content, use_trafilatura=True, favor_recall=False):
     if not html_content: return [], ""
     soup_input = html_content
@@ -222,38 +222,52 @@ def extract_structural_passages_with_full_text(html_content, use_trafilatura=Tru
     for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']):
         if el.name: el.decompose()
 
+    full_text = clean_text_for_display(soup.get_text(separator=' '))
+    
+    all_passages = []
+    current_passage_parts = []
+    
+    # Define tags that signify content blocks
     target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
     content_elements = soup.find_all(target_tags)
-    merged_passages, i = [], 0
-    while i < len(content_elements):
-        current_element = content_elements[i]
-        if current_element.name == 'table':
-            rows = current_element.find_all('tr')
+
+    for element in content_elements:
+        # A heading marks the end of the previous passage and the start of a new one.
+        if element.name.startswith('h'):
+            if current_passage_parts:
+                passage_text = " ".join(current_passage_parts)
+                if passage_text.strip():
+                    all_passages.append(clean_text_for_display(passage_text))
+                current_passage_parts = []
+        
+        # Process the current element's text
+        text_to_add = ''
+        if element.name == 'table':
+            rows = element.find_all('tr')
             table_text = ". ".join(
                 " | ".join(cell.get_text(separator=' ', strip=True) for cell in row.find_all(['td', 'th']))
                 for row in rows
             )
-            current_text = table_text
-        else:
-            current_text = current_element.get_text(separator=' ', strip=True)
+            text_to_add = table_text
+        elif element.name in ['ul', 'ol']:
+            items = element.find_all('li')
+            list_text = " ".join(f"* {item.get_text(separator=' ', strip=True)}" for item in items)
+            text_to_add = list_text
+        else: # For <p> and <h> tags
+            text_to_add = element.get_text(separator=' ', strip=True)
 
-        if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements) and content_elements[i+1].name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-            next_element = content_elements[i+1]
-            if next_element.name == 'table':
-                 rows = next_element.find_all('tr')
-                 next_text = ". ".join(" | ".join(cell.get_text(separator=' ', strip=True) for cell in row.find_all(['td', 'th'])) for row in rows)
-            else:
-                next_text = next_element.get_text(separator=' ', strip=True)
+        if text_to_add:
+            current_passage_parts.append(text_to_add)
+
+    # Add the last remaining passage after the loop finishes
+    if current_passage_parts:
+        passage_text = " ".join(current_passage_parts)
+        if passage_text.strip():
+            all_passages.append(clean_text_for_display(passage_text))
             
-            combined_text = f"{current_text}. {next_text}"
-            if combined_text.strip(): merged_passages.append(combined_text)
-            i += 2
-        else:
-            if current_text.strip(): merged_passages.append(current_text)
-            i += 1
+    # Filter out any passages that are too short after cleaning
+    final_passages = [p for p in all_passages if p and len(p.split()) > 5]
 
-    final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
-    full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
 
 def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
@@ -301,7 +315,6 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{cleaned_sentence}</p>'
     return highlighted_html
 
-# ### RESTORED ### - Full, detailed Gemini prompt and robust parsing from your original script
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
     model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
@@ -434,20 +447,22 @@ if st.session_state.processing:
                 is_url_source = any(job['identifier'] == identifier for job in jobs if job['type'] == 'url')
                 raw_html_for_highlighting = content if is_url_source else "".join([f"<p>{clean_text_for_display(p)}</p>" for p in content.split('\n\n')])
                 
-                units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(
-                    raw_html_for_highlighting,
-                    use_trafilatura=st.session_state.get('use_trafilatura_opt', False) and is_url_source,
-                    favor_recall=st.session_state.get('trafilatura_favor_recall', False)
-                )
-
                 if analysis_granularity.startswith("Sentence"):
+                    _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting, use_trafilatura=False) # No need for complex passages here
                     units_for_embedding = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
                     units_for_display = units_for_embedding
                 else: # Passage-based
+                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(
+                        raw_html_for_highlighting,
+                        use_trafilatura=st.session_state.get('use_trafilatura_opt', False) and is_url_source,
+                        favor_recall=st.session_state.get('trafilatura_favor_recall', False)
+                    )
                     units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
-                    if not units_for_display and page_text_for_highlight: units_for_display = [page_text_for_highlight]
 
-                if not units_for_embedding: st.warning(f"No processable content units found for {identifier}. Skipping."); continue
+                if not units_for_embedding: 
+                    if not units_for_display:
+                        st.warning(f"No processable content units found for {identifier}. Skipping."); continue
+                    units_for_embedding = units_for_display # Fallback for overlap mode if no overlap can be created
                 
                 unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
                 local_processed_units_data[identifier] = {"units": units_for_display, "embeddings": unit_embeddings, "unit_similarities": None, "page_text_for_highlight": page_text_for_highlight, "raw_html": raw_html_for_highlighting}
@@ -498,7 +513,8 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     st.markdown("---"); st.subheader(f"🔥 {unit_label} Heatmaps vs. All Queries")
     for item_idx, (identifier, p_data) in enumerate(st.session_state.url_processed_units_dict.items()):
         with st.expander(f"Heatmap & Details for: {identifier}", expanded=(item_idx==0)):
-            if p_data.get("unit_similarities") is None: st.write(f"No {unit_label.lower()} similarity data."); continue
+            if p_data.get("unit_similarities") is None or p_data.get("units") is None or not p_data["units"]:
+                st.write(f"No {unit_label.lower()} similarity data available for this source."); continue
             unit_sims, units, all_queries = p_data["unit_similarities"], p_data["units"], st.session_state.all_queries_for_analysis
             short_queries = [q.replace("Initial: ", "(I) ")[:50] + ('...' if len(q) > 50 else '') for q in all_queries]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
@@ -557,4 +573,4 @@ if st.session_state.get("entity_analysis_results"):
                     st.dataframe(df_missing, use_container_width=True, column_config={"Salience": st.column_config.ProgressColumn("Salience (Importance)", format="%.3f", min_value=0, max_value=1)})
 
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.27 | Core Functionality Restored")
+st.sidebar.info("Query Fan-Out Analyzer | v5.28 | Passage Logic Restored")
