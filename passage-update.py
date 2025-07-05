@@ -371,18 +371,17 @@ else:
 
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", 3, 50, 5, disabled=st.session_state.processing)
 if analysis_granularity.startswith("Passage"):
-    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, disabled=st.session_state.processing)
+    st.sidebar.subheader("Passage Context Settings")
+    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, help="For each core passage, include N sentences from adjacent passages for contextual similarity calculation. This overlap is NOT shown in the results display.", disabled=st.session_state.processing)
 else: s_overlap_val = 0
+analyze_disabled = not (st.session_state.get("gemini_api_configured", False) or st.session_state.get("openai_api_configured", False))
 
-analyze_disabled = not (st.session_state.gemini_api_configured or st.session_state.openai_api_configured)
-if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=st.session_state.processing or analyze_disabled):
+# ### FIXED ### - Single, consolidated button with a unique key
+if st.sidebar.button("🚀 Analyze Content", key="analyze_button", type="primary", disabled=st.session_state.processing or analyze_disabled):
     st.session_state.processing = True
-    st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis # Store the checkbox state
-    st.rerun()
-
-# --- REFACTORED: Button now just sets the processing flag ---
-if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=st.session_state.processing or analyze_disabled):
-    st.session_state.processing = True
+    st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis
+    st.session_state.use_trafilatura_opt = use_trafilatura_opt
+    st.session_state.trafilatura_favor_recall = trafilatura_favor_recall
     st.rerun()
 
 # --- REFACTORED: All processing happens inside this block, controlled by the flag ---
