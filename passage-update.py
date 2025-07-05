@@ -21,6 +21,11 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 import textwrap
 from selenium_stealth import stealth
+import json # ### NEW ###
+
+# ### NEW ### - Import Google Cloud NLP libraries
+from google.cloud import language_v1
+from google.oauth2 import service_account
 
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
@@ -38,6 +43,10 @@ if "openai_client" not in st.session_state: st.session_state.openai_client = Non
 if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'all-mpnet-base-v2'
 # --- NEW: State flag to prevent interruptions ---
 if "processing" not in st.session_state: st.session_state.processing = False
+# ### NEW ### - Session state for Google Cloud NLP
+if "gcp_nlp_configured" not in st.session_state: st.session_state.gcp_nlp_configured = False
+if "gcp_credentials_info" not in st.session_state: st.session_state.gcp_credentials_info = None
+if "entity_analysis_results" not in st.session_state: st.session_state.entity_analysis_results = None
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -91,16 +100,90 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
                 st.error(f"API Key Failed: {str(e)[:200]}")
         else: st.warning("Please enter API Key.")
 
+# ### NEW ### - Google Cloud NLP API Configuration in Sidebar
+with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.gcp_nlp_configured):
+    uploaded_gcp_key = st.file_uploader(
+        "Upload Google Cloud Service Account JSON",
+        type="json",
+        help="Upload the JSON key file for a service account with 'Cloud Natural Language API User' role.",
+        disabled=st.session_state.processing
+    )
+    if uploaded_gcp_key is not None:
+        try:
+            # Read and parse the uploaded file
+            credentials_info = json.load(uploaded_gcp_key)
+            # You can perform a lightweight check here if needed
+            if "project_id" in credentials_info and "private_key" in credentials_info:
+                st.session_state.gcp_credentials_info = credentials_info
+                st.session_state.gcp_nlp_configured = True
+                st.success(f"GCP Key for project '{credentials_info['project_id']}' loaded!")
+            else:
+                st.error("Invalid JSON key file format.")
+                st.session_state.gcp_nlp_configured = False
+                st.session_state.gcp_credentials_info = None
+        except Exception as e:
+            st.error(f"Failed to process GCP key file: {e}")
+            st.session_state.gcp_nlp_configured = False
+            st.session_state.gcp_credentials_info = None
+
 st.sidebar.markdown("---")
 if st.session_state.get("openai_api_configured"): st.sidebar.markdown("✅ OpenAI API: **Configured**")
 else: st.sidebar.markdown("⚠️ OpenAI API: **Not Configured**")
 if st.session_state.get("gemini_api_configured"): st.sidebar.markdown("✅ Gemini API: **Configured**")
 else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
+# ### NEW ### - Status indicator for Google Cloud NLP
+if st.session_state.get("gcp_nlp_configured"): st.sidebar.markdown("✅ Google NLP API: **Configured**")
+else: st.sidebar.markdown("⚠️ Google NLP API: **Not Configured**")
+
 if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
     st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
 if st.session_state.get("gemini_api_key_to_persist"):
     try: genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
     except Exception: st.session_state.gemini_api_configured = False
+
+# ### NEW ### - Entity Extraction Function using Google Cloud NLP API
+@st.cache_data(show_spinner="Extracting entities from text...")
+def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
+    """Extracts entities from a text using Google Cloud Natural Language API."""
+    if not _credentials_info:
+        st.error("Google Cloud credentials are not configured.")
+        return {}
+    if not text:
+        return {}
+
+    try:
+        # Use the credentials from the uploaded file
+        credentials = service_account.Credentials.from_service_account_info(_credentials_info)
+        client = language_v1.LanguageServiceClient(credentials=credentials)
+        
+        # Truncate text to be within Google's limit (just in case)
+        max_bytes = 1000000
+        text_bytes = text.encode('utf-8')
+        if len(text_bytes) > max_bytes:
+            text = text_bytes[:max_bytes].decode('utf-8', 'ignore')
+            st.warning("Text was truncated to fit Google NLP API size limit.")
+
+        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
+        
+        response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
+        
+        entities_dict = {}
+        for entity in response.entities:
+            # Use lowercase for consistent keying, but store original name
+            key = entity.name.lower()
+            # Only add new entities or update if the new one has higher salience
+            if key not in entities_dict or entity.salience > entities_dict[key]['salience']:
+                 entities_dict[key] = {
+                    'name': entity.name,
+                    'type': language_v1.Entity.Type(entity.type_).name,
+                    'salience': entity.salience,
+                    'mentions': len(entity.mentions)
+                }
+        return entities_dict
+
+    except Exception as e:
+        st.error(f"Google Cloud NLP API Error: {e}")
+        return {}
 
 
 # --- Embedding Functions ---
@@ -276,16 +359,26 @@ if input_mode == "Fetch from URLs":
     urls_text_area_val = st.sidebar.text_area("Enter URLs:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr", height=100, disabled=st.session_state.processing)
     use_trafilatura_opt = st.sidebar.checkbox("Use Trafilatura (main content)", value=True, help="Attempt to use Trafilatura for primary content extraction. If it fails, a fallback BeautifulSoup method is used.", disabled=st.session_state.processing)
     st.session_state.trafilatura_favor_recall = st.sidebar.checkbox("Trafilatura: Favor Recall", value=False, help="Trafilatura option to get more text, potentially at the cost of precision.", disabled=st.session_state.processing)
+    run_entity_gap_analysis = st.sidebar.checkbox(
+        "☑️ Run Entity Gap Analysis", value=False,
+        help="Requires Google Cloud NLP to be configured. Extracts entities to find content gaps.",
+        disabled=(st.session_state.processing or not st.session_state.gcp_nlp_configured)
+    )
 else:
-    pasted_content_label = st.sidebar.text_input("Content Label:", value="Pasted Content", disabled=st.session_state.processing)
     pasted_content_text = st.sidebar.text_area("Paste content here:", height=200, disabled=st.session_state.processing)
-    urls_text_area_val, use_trafilatura_opt = "", False
+    urls_text_area_val = ""
+    run_entity_gap_analysis = False # Disable for pasted text mode
+
 num_sq_val = st.sidebar.slider("Num Synthetic Queries:", 3, 50, 5, disabled=st.session_state.processing)
 if analysis_granularity.startswith("Passage"):
-    st.sidebar.subheader("Passage Context Settings")
-    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, help="For each core passage, include N sentences from adjacent passages for contextual similarity calculation. This overlap is NOT shown in the results display.", disabled=st.session_state.processing)
+    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 10, 2, disabled=st.session_state.processing)
 else: s_overlap_val = 0
-analyze_disabled = not (st.session_state.get("gemini_api_configured", False) or st.session_state.get("openai_api_configured", False))
+
+analyze_disabled = not (st.session_state.gemini_api_configured or st.session_state.openai_api_configured)
+if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=st.session_state.processing or analyze_disabled):
+    st.session_state.processing = True
+    st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis # Store the checkbox state
+    st.rerun()
 
 # --- REFACTORED: Button now just sets the processing flag ---
 if st.sidebar.button("🚀 Analyze Content", type="primary", disabled=st.session_state.processing or analyze_disabled):
@@ -300,9 +393,9 @@ if st.session_state.processing:
         if input_mode == "Fetch from URLs":
             if not urls_text_area_val: st.warning("Please enter URLs."); st.stop()
             jobs = [{'type': 'url', 'identifier': url.strip()} for url in urls_text_area_val.split('\n') if url.strip()]
-        else:
-            if not pasted_content_text: st.warning("Please paste content."); st.stop()
-            jobs.append({'type': 'paste', 'identifier': pasted_content_label or "Pasted Content", 'content': pasted_content_text})
+        else: # Pasted text mode
+            st.warning("Entity Gap Analysis is only available for URL mode."); st.session_state.run_entity_gap_analysis_flag = False
+            jobs.append({'type': 'paste', 'identifier': "Pasted Content", 'content': pasted_content_text})
         
         local_embedding_model_instance = None
         if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
@@ -311,6 +404,7 @@ if st.session_state.processing:
         
         st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
         st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
+        st.session_state.entity_analysis_results = None # Reset previous entity results
         
         if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
             with st.spinner("Initializing Selenium WebDriver..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
@@ -371,6 +465,23 @@ if st.session_state.processing:
             st.session_state.all_queries_for_analysis, st.session_state.analysis_done = local_all_queries, True
             st.session_state.last_analysis_granularity = analysis_granularity
 
+        # ### NEW ### - Perform Entity Analysis if requested
+        if st.session_state.get('run_entity_gap_analysis_flag'):
+            if not st.session_state.gcp_nlp_configured:
+                st.warning("Entity Gap Analysis was skipped because Google Cloud NLP is not configured.")
+            elif input_mode != "Fetch from URLs" or len(jobs) < 2:
+                st.warning("Entity Gap Analysis requires at least two URLs to compare.")
+            else:
+                entity_results = {}
+                with st.spinner("Performing Entity Analysis on all URLs..."):
+                    for identifier, data in st.session_state.url_processed_units_dict.items():
+                        full_text = data.get("page_text_for_highlight", "")
+                        if full_text:
+                            # Pass credentials info from session state to the cached function
+                            entities = extract_entities_with_google_nlp(full_text, st.session_state.gcp_credentials_info)
+                            entity_results[identifier] = entities
+                st.session_state.entity_analysis_results = entity_results
+
     finally:
         st.session_state.processing = False
         st.rerun()
@@ -425,5 +536,69 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                         st.markdown(f"> {u_t}")
                         st.divider()
 
+# ### NEW ### - Display section for Entity Gap Analysis
+if st.session_state.get("entity_analysis_results"):
+    st.markdown("---")
+    with st.expander("🔎 Entity Gap Analysis", expanded=True):
+        results = st.session_state.entity_analysis_results
+        url_options = list(results.keys())
+
+        if len(url_options) < 2:
+            st.info("Entity Gap Analysis requires at least two URLs to compare.")
+        else:
+            primary_url = st.selectbox(
+                "Select your Primary URL to check for missing entities:",
+                options=url_options,
+                index=0,
+                key="primary_url_selector"
+            )
+
+            if primary_url:
+                # Get entities from the primary URL
+                primary_entities = set(results[primary_url].keys())
+                st.write(f"Found **{len(primary_entities)}** unique entities on `{primary_url}`.")
+
+                # Gather all entities from competitor URLs
+                competitor_entities_map = {}
+                for url, entities_data in results.items():
+                    if url != primary_url:
+                        for entity_key, entity_info in entities_data.items():
+                            if entity_key not in competitor_entities_map:
+                                competitor_entities_map[entity_key] = {'info': entity_info, 'found_on': []}
+                            competitor_entities_map[entity_key]['found_on'].append(url)
+                
+                # Find entities that are in competitors but not in the primary URL
+                missing_entities = []
+                for entity_key, data in competitor_entities_map.items():
+                    if entity_key not in primary_entities:
+                        missing_entities.append({
+                            'Entity': data['info']['name'],
+                            'Type': data['info']['type'],
+                            'Salience': data['info']['salience'],
+                            'Found On (Competitors)': ", ".join([f"`{os.path.basename(u)}`" for u in data['found_on']])
+                        })
+                
+                if not missing_entities:
+                    st.success(f"✅ **No Gaps Found!** Your primary URL covers all entities found on the competitor pages.")
+                else:
+                    st.subheader(f"❗️ Found {len(missing_entities)} entities present in other URLs but MISSING from your page:")
+                    
+                    # Create the chart (a DataFrame)
+                    df_missing = pd.DataFrame(missing_entities)
+                    df_missing = df_missing.sort_values(by='Salience', ascending=False).reset_index(drop=True)
+                    
+                    st.dataframe(
+                        df_missing,
+                        use_container_width=True,
+                        column_config={
+                            "Salience": st.column_config.ProgressColumn(
+                                "Salience (Importance)",
+                                format="%.3f",
+                                min_value=0,
+                                max_value=1,
+                            ),
+                        }
+                    )
+
 st.sidebar.divider()
-st.sidebar.info("Query Fan-Out Analyzer | v5.22 | State-Managed & Restored")
+st.sidebar.info("Query Fan-Out Analyzer | v5.23 | Entity Analysis Added")
