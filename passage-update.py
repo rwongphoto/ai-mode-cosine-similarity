@@ -580,6 +580,7 @@ if st.session_state.get("entity_analysis_results"):
                             'Entity': data['info']['name'],
                             'Type': data['info']['type'],
                             'Salience': data['info']['salience'],
+                            'Mentions': data['info']['mentions'],
                             'Found On (Competitors)': ", ".join([f"`{u}`" for u in data['found_on']])
                         })
                 
@@ -602,6 +603,11 @@ if st.session_state.get("entity_analysis_results"):
                                 min_value=0,
                                 max_value=1,
                             ),
+                            "Mentions": st.column_config.NumberColumn(
+                                "Mentions",
+                                help="Number of times the entity was mentioned on the single competitor page where it was most salient.",
+                                format="%d"
+                            )
                         }
                     )
 
