@@ -27,6 +27,8 @@ import json # ### NEW ###
 from google.cloud import language_v1
 from google.oauth2 import service_account
 
+import base64 # ### ZYTE ### - New import for decoding
+
 st.set_page_config(layout="wide", page_title="AI Semantic Analyzer")
 
 # --- Session State Initialization ---
@@ -47,6 +49,10 @@ if "processing" not in st.session_state: st.session_state.processing = False
 if "gcp_nlp_configured" not in st.session_state: st.session_state.gcp_nlp_configured = False
 if "gcp_credentials_info" not in st.session_state: st.session_state.gcp_credentials_info = None
 if "entity_analysis_results" not in st.session_state: st.session_state.entity_analysis_results = None
+
+# ### ZYTE ### - New session state for Zyte API
+if "zyte_api_key_to_persist" not in st.session_state: st.session_state.zyte_api_key_to_persist = ""
+if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_configured = False
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -100,6 +106,32 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
                 st.error(f"API Key Failed: {str(e)[:200]}")
         else: st.warning("Please enter API Key.")
 
+# ### ZYTE ### - New expander for Zyte API configuration
+with st.sidebar.expander("Zyte API (Web Scraping)", expanded=not st.session_state.get("zyte_api_configured", False)):
+    zyte_api_key_input = st.text_input("Enter Zyte API Key:", type="password", value=st.session_state.get("zyte_api_key_to_persist", ""), disabled=st.session_state.processing)
+    if st.button("Set & Verify Zyte Key", disabled=st.session_state.processing):
+        if zyte_api_key_input:
+            try:
+                # Verify key by making a cheap, simple request
+                response = requests.post(
+                    "https://api.zyte.com/v1/extract",
+                    auth=(zyte_api_key_input, ''),
+                    json={'url': 'https://toscrape.com/', 'httpResponseBody': True},
+                    timeout=20
+                )
+                if response.status_code == 200:
+                    st.session_state.zyte_api_key_to_persist = zyte_api_key_input
+                    st.session_state.zyte_api_configured = True
+                    st.success("Zyte API Key Configured!"); st.rerun()
+                else:
+                    st.session_state.zyte_api_configured = False
+                    st.error(f"Zyte Key Failed. Status: {response.status_code}. Message: {response.text[:200]}")
+            except Exception as e:
+                st.session_state.zyte_api_configured = False
+                st.error(f"Zyte API Request Failed: {str(e)[:200]}")
+        else:
+            st.warning("Please enter Zyte API Key.")
+
 # ### NEW ### - Google Cloud NLP API Configuration in Sidebar
 with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.gcp_nlp_configured):
     uploaded_gcp_key = st.file_uploader(
@@ -134,6 +166,8 @@ else: st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 # ### NEW ### - Status indicator for Google Cloud NLP
 if st.session_state.get("gcp_nlp_configured"): st.sidebar.markdown("✅ Google NLP API: **Configured**")
 else: st.sidebar.markdown("⚠️ Google NLP API: **Not Configured**")
+# ### ZYTE ### - New status indicator
+st.sidebar.markdown(f"✅ Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Not Configured'}**")
 
 if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
     st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
@@ -219,6 +253,40 @@ def initialize_selenium_driver():
         return driver
     except Exception as e:
         st.error(f"Selenium with Stealth init failed: {e}"); return None
+# ### ZYTE ### - New function for fetching content with Zyte API
+def fetch_content_with_zyte(url, api_key):
+    """Fetches HTML content of a URL using the Zyte API."""
+    if not api_key:
+        st.error("Zyte API key is not configured. Please set it in the sidebar.")
+        return None
+    
+    enforce_rate_limit()
+    st.write(f"_Fetching with Zyte API: {url}..._")
+    
+    try:
+        response = requests.post(
+            "https://api.zyte.com/v1/extract",
+            auth=(api_key, ''),
+            json={'url': url, 'httpResponseBody': True},
+            timeout=45  # Increased timeout for potentially long scrapes
+        )
+        response.raise_for_status()  # Will raise an exception for 4xx/5xx errors
+        
+        data = response.json()
+        if data.get('httpResponseBody'):
+            # The response body is base64 encoded
+            b64_html = data['httpResponseBody']
+            return base64.b64decode(b64_html).decode('utf-8', 'ignore')
+        else:
+            st.error(f"Zyte API did not return HTML content for {url}.")
+            return None
+            
+    except requests.exceptions.HTTPError as e:
+        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code} - {e.response.text[:200]}")
+        return None
+    except Exception as e:
+        st.error(f"An error occurred with Zyte API for {url}: {e}")
+        return None
 def fetch_content_with_selenium(url, driver_instance):
     if not driver_instance: return fetch_content_with_requests(url)
     try:
@@ -312,7 +380,7 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
 # --- RESTORED: Full, detailed Gemini prompt ---
 def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False): st.error("Gemini API not configured."); return []
-    model = genai.GenerativeModel("gemini-2.5-pro-preview-05-06")
+    model = genai.GenerativeModel("gemini-2.5-pro")
     prompt = f"""
     Based on the user's initial search query: "{user_query}"
     Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique. These queries should explore different facets, intents, or related concepts. Aim for a mix of the following query types, ensuring variety:
@@ -343,14 +411,24 @@ def generate_synthetic_queries(user_query, num_queries=7):
 st.title("✨ AI Mode Simulator ✨")
 st.markdown("Fetch, clean, analyze web content against initial & AI-generated queries. Features advanced text extraction and weighted scoring.")
 
-# --- Sidebar Configuration Widgets (all disabled during processing) ---
+# --- Sidebar Configuration Widgets ---
 st.sidebar.subheader("🤖 Embedding Model Configuration")
 embedding_model_options = { "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1", "Local: MPNet (Quality Focus)": "all-mpnet-base-v2", "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", "Gemini: embedding-001": "gemini-embedding-001"}
-selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", options=list(embedding_model_options.keys()), index=0, disabled=st.session_state.processing)
+selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", options=list(embedding_model_options.keys()), index=1, disabled=st.session_state.processing)
 st.session_state.selected_embedding_model = embedding_model_options[selected_embedding_label]
 st.sidebar.subheader("📄 Text Extraction & Processing")
 analysis_granularity = st.sidebar.selectbox("Analysis Granularity:", ("Passage-based (HTML Tags)", "Sentence-based"), index=0, disabled=st.session_state.processing)
-use_selenium_opt = st.sidebar.checkbox("Use Selenium for fetching (for URL mode)", value=True, disabled=st.session_state.processing)
+
+# ### ZYTE ### - Replaced checkbox with a selectbox for more options
+scraping_method_options = ["Zyte API (for tough sites)", "Selenium (for dynamic sites)", "Requests (lightweight)"]
+scraping_method = st.sidebar.selectbox(
+    "Scraping Method (for URL mode):",
+    options=scraping_method_options,
+    index=0,
+    disabled=st.session_state.processing,
+    help="Zyte is best for avoiding blocks. Selenium renders Javascript. Requests is fastest but easily blocked."
+)
+
 st.sidebar.divider()
 st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"), disabled=st.session_state.processing)
@@ -383,14 +461,17 @@ if analysis_granularity.startswith("Passage"):
 else: s_overlap_val = 0
 analyze_disabled = not (st.session_state.get("gemini_api_configured", False) or st.session_state.get("openai_api_configured", False))
 
+analyze_disabled = not (st.session_state.gemini_api_configured or st.session_state.openai_api_configured)
 if st.sidebar.button("🚀 Analyze Content", key="analyze_button", type="primary", disabled=st.session_state.processing or analyze_disabled):
     st.session_state.processing = True
     st.session_state.run_entity_gap_analysis_flag = run_entity_gap_analysis
     st.session_state.use_trafilatura_opt = use_trafilatura_opt
     st.session_state.trafilatura_favor_recall = trafilatura_favor_recall
+    # ### ZYTE ### - Store the selected scraping method in session state
+    st.session_state.scraping_method = scraping_method
     st.rerun()
 
-# --- REFACTORED: All processing happens inside this block, controlled by the flag ---
+## --- REFACTORED: All processing happens inside this block, controlled by the flag ---
 if st.session_state.processing:
     try:
         jobs = []
@@ -409,15 +490,19 @@ if st.session_state.processing:
         
         st.session_state.all_url_metrics_list, st.session_state.url_processed_units_dict = [], {}
         st.session_state.all_queries_for_analysis, st.session_state.analysis_done = [], False
-        st.session_state.entity_analysis_results = None # Reset previous entity results
+        st.session_state.entity_analysis_results = None
         
-        if use_selenium_opt and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
+        # ### ZYTE ### - Conditionally initialize Selenium only if it's selected
+        if st.session_state.get("scraping_method", "").startswith("Selenium") and input_mode == "Fetch from URLs" and not st.session_state.selenium_driver_instance:
             with st.spinner("Initializing Selenium WebDriver..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
         
         with st.spinner("Generating synthetic queries..."): synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
         local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
         
         with st.spinner("Embedding all queries..."): local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
+        if local_all_query_embs.size == 0:
+            st.error("Query embedding failed. Halting analysis.")
+            st.stop()
         initial_query_embedding = local_all_query_embs[0]
         
         local_all_metrics, local_processed_units_data = [], {}
@@ -425,7 +510,16 @@ if st.session_state.processing:
         if input_mode == "Fetch from URLs":
             with st.spinner(f"Fetching content from {len(jobs)} URL(s)..."):
                 for job in jobs:
-                    fetched_content[job['identifier']] = fetch_content_with_selenium(job['identifier'], st.session_state.selenium_driver_instance) if use_selenium_opt else fetch_content_with_requests(job['identifier'])
+                    url = job['identifier']
+                    # ### ZYTE ### - Dispatch to the correct fetching function based on user's choice
+                    method = st.session_state.get("scraping_method", "Requests (lightweight)")
+                    if method.startswith("Zyte"):
+                        fetched_content[url] = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
+                    elif method.startswith("Selenium"):
+                        fetched_content[url] = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
+                    else: # Default to Requests
+                        fetched_content[url] = fetch_content_with_requests(url)
+
             if st.session_state.selenium_driver_instance:
                 st.session_state.selenium_driver_instance.quit(); st.session_state.selenium_driver_instance = None
         else: fetched_content[jobs[0]['identifier']] = jobs[0]['content']
