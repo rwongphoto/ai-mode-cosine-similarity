@@ -253,45 +253,37 @@ def initialize_selenium_driver():
         return driver
     except Exception as e:
         st.error(f"Selenium with Stealth init failed: {e}"); return None
-# ### ZYTE ### - MODIFIED function for fetching content with Zyte API
-def fetch_content_with_zyte(url, api_key, render_js=False):
+# ### ZYTE ### - New function for fetching content with Zyte API
+def fetch_content_with_zyte(url, api_key):
+    """Fetches HTML content of a URL using the Zyte API."""
     if not api_key:
-        st.error("Zyte API key is not configured...")
+        st.error("Zyte API key is not configured. Please set it in the sidebar.")
         return None
     
     enforce_rate_limit()
-    st.write(f"_Fetching with Zyte API (JS Rendering: {render_js}): {url}..._")
+    st.write(f"_Fetching with Zyte API: {url}..._")
     
-    # Dynamically build the request payload
-    payload = {'url': url}
-    if render_js:
-        payload['browserHtml'] = True
-    else:
-        payload['httpResponseBody'] = True
-
     try:
         response = requests.post(
             "https://api.zyte.com/v1/extract",
             auth=(api_key, ''),
-            json=payload,
-            timeout=90  # Increase timeout even more for browser rendering
+            json={'url': url, 'httpResponseBody': True},
+            timeout=45  # Increased timeout for potentially long scrapes
         )
-        response.raise_for_status()
+        response.raise_for_status()  # Will raise an exception for 4xx/5xx errors
         
         data = response.json()
-        
-        # Check for the correct response key
-        html_content = data.get('browserHtml') if render_js else data.get('httpResponseBody')
-
-        if html_content:
-            # httpResponseBody is base64, browserHtml is plain text
-            if not render_js:
-                return base64.b64decode(html_content).decode('utf-8', 'ignore')
-            return html_content # browserHtml is already decoded
+        if data.get('httpResponseBody'):
+            # The response body is base64 encoded
+            b64_html = data['httpResponseBody']
+            return base64.b64decode(b64_html).decode('utf-8', 'ignore')
         else:
             st.error(f"Zyte API did not return HTML content for {url}.")
             return None
             
+    except requests.exceptions.HTTPError as e:
+        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code} - {e.response.text[:200]}")
+        return None
     except Exception as e:
         st.error(f"An error occurred with Zyte API for {url}: {e}")
         return None
@@ -437,15 +429,6 @@ scraping_method = st.sidebar.selectbox(
     help="Zyte is best for avoiding blocks. Selenium renders Javascript. Requests is fastest but easily blocked."
 )
 
-# New checkbox, only appears if Zyte is chosen
-zyte_render_js = False
-if scraping_method.startswith("Zyte"):
-    zyte_render_js = st.sidebar.checkbox(
-        "Render JavaScript with Zyte", 
-        value=False, 
-        help="Slower and more expensive, but needed for dynamic sites (like using Selenium)."
-    )
-
 st.sidebar.divider()
 st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"), disabled=st.session_state.processing)
@@ -531,7 +514,7 @@ if st.session_state.processing:
                     # ### ZYTE ### - Dispatch to the correct fetching function based on user's choice
                     method = st.session_state.get("scraping_method", "Requests (lightweight)")
                     if method.startswith("Zyte"):
-                        fetched_content[url] = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist, render_js=st.session_state.zyte_render_js_flag)
+                        fetched_content[url] = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
                     elif method.startswith("Selenium"):
                         fetched_content[url] = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
                     else: # Default to Requests
