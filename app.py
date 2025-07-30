@@ -253,37 +253,45 @@ def initialize_selenium_driver():
         return driver
     except Exception as e:
         st.error(f"Selenium with Stealth init failed: {e}"); return None
-# ### ZYTE ### - New function for fetching content with Zyte API
-def fetch_content_with_zyte(url, api_key):
-    """Fetches HTML content of a URL using the Zyte API."""
+# ### ZYTE ### - MODIFIED function for fetching content with Zyte API
+def fetch_content_with_zyte(url, api_key, render_js=False):
     if not api_key:
-        st.error("Zyte API key is not configured. Please set it in the sidebar.")
+        st.error("Zyte API key is not configured...")
         return None
     
     enforce_rate_limit()
-    st.write(f"_Fetching with Zyte API: {url}..._")
+    st.write(f"_Fetching with Zyte API (JS Rendering: {render_js}): {url}..._")
     
+    # Dynamically build the request payload
+    payload = {'url': url}
+    if render_js:
+        payload['browserHtml'] = True
+    else:
+        payload['httpResponseBody'] = True
+
     try:
         response = requests.post(
             "https://api.zyte.com/v1/extract",
             auth=(api_key, ''),
-            json={'url': url, 'httpResponseBody': True},
-            timeout=45  # Increased timeout for potentially long scrapes
+            json=payload,
+            timeout=90  # Increase timeout even more for browser rendering
         )
-        response.raise_for_status()  # Will raise an exception for 4xx/5xx errors
+        response.raise_for_status()
         
         data = response.json()
-        if data.get('httpResponseBody'):
-            # The response body is base64 encoded
-            b64_html = data['httpResponseBody']
-            return base64.b64decode(b64_html).decode('utf-8', 'ignore')
+        
+        # Check for the correct response key
+        html_content = data.get('browserHtml') if render_js else data.get('httpResponseBody')
+
+        if html_content:
+            # httpResponseBody is base64, browserHtml is plain text
+            if not render_js:
+                return base64.b64decode(html_content).decode('utf-8', 'ignore')
+            return html_content # browserHtml is already decoded
         else:
             st.error(f"Zyte API did not return HTML content for {url}.")
             return None
             
-    except requests.exceptions.HTTPError as e:
-        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code} - {e.response.text[:200]}")
-        return None
     except Exception as e:
         st.error(f"An error occurred with Zyte API for {url}: {e}")
         return None
@@ -514,7 +522,7 @@ if st.session_state.processing:
                     # ### ZYTE ### - Dispatch to the correct fetching function based on user's choice
                     method = st.session_state.get("scraping_method", "Requests (lightweight)")
                     if method.startswith("Zyte"):
-                        fetched_content[url] = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
+                        fetched_content[url] = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist, render_js=st.session_state.zyte_render_js_flag)
                     elif method.startswith("Selenium"):
                         fetched_content[url] = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
                     else: # Default to Requests
