@@ -437,6 +437,15 @@ scraping_method = st.sidebar.selectbox(
     help="Zyte is best for avoiding blocks. Selenium renders Javascript. Requests is fastest but easily blocked."
 )
 
+# New checkbox, only appears if Zyte is chosen
+zyte_render_js = False
+if scraping_method.startswith("Zyte"):
+    zyte_render_js = st.sidebar.checkbox(
+        "Render JavaScript with Zyte", 
+        value=False, 
+        help="Slower and more expensive, but needed for dynamic sites (like using Selenium)."
+    )
+
 st.sidebar.divider()
 st.sidebar.header("⚙️ Input & Query Configuration")
 input_mode = st.sidebar.radio("Choose Input Mode:", ("Fetch from URLs", "Paste Raw Text"), disabled=st.session_state.processing)
