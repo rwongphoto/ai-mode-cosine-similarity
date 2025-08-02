@@ -527,15 +527,79 @@ if st.session_state.entity_analysis_results:
             }
         )
         
-        # Entity location finder
-        st.subheader("📍 Find Entity Locations in Your Content")
+        # Missing Entity Location Analysis
+        if missing_entities and st.session_state.content_passages.get(primary_url):
+            st.subheader("📍 Where to Add Missing Entities in Your Content")
+            st.markdown("_Find the most relevant passages in your content for each missing entity, sorted by query relevance._")
+            
+            passages = st.session_state.content_passages[primary_url]
+            
+            # Sort missing entities by query relevance (highest first)
+            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
+            
+            # Show top N missing entities
+            num_to_show = st.slider("Number of missing entities to analyze:", 1, min(10, len(sorted_missing)), min(5, len(sorted_missing)))
+            
+            for i, entity_info in enumerate(sorted_missing[:num_to_show]):
+                entity_name = entity_info['Entity']
+                query_relevance = entity_info['Query Relevance']
+                
+                # Find best passage for this missing entity
+                best_passage_info = find_entity_best_passage(
+                    entity_name, 
+                    passages, 
+                    st.session_state.embedding_model
+                )
+                
+                # Create expandable section for each entity
+                relevance_icon = "🔥" if query_relevance > 0.7 else "🟡" if query_relevance > 0.4 else "🔵"
+                
+                with st.expander(f"{relevance_icon} **{entity_name}** (Query Relevance: {query_relevance:.3f})", expanded=(i < 3)):
+                    col1, col2 = st.columns([1, 2])
+                    
+                    with col1:
+                        st.markdown("**📊 Entity Info:**")
+                        st.markdown(f"- **Type:** {entity_info['Type']}")
+                        st.markdown(f"- **Query Relevance:** {query_relevance:.3f}")
+                        st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
+                        st.markdown(f"- **Competitors:** {entity_info['URLs']}")
+                    
+                    with col2:
+                        if best_passage_info["similarity"] > 0.1:  # Lower threshold for missing entities
+                            st.markdown("**🎯 Best place to add this entity in your content:**")
+                            st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
+                            
+                            # Highlight potential insertion point
+                            passage_text = best_passage_info["passage"]
+                            
+                            # Show the passage with suggested insertion styling
+                            st.markdown("**📝 Suggested insertion location:**")
+                            st.markdown(f"```\n{passage_text}\n```")
+                            
+                            # Provide context about why this location
+                            if best_passage_info["similarity"] > 0.5:
+                                st.success("✅ High semantic relevance - excellent insertion point")
+                            elif best_passage_info["similarity"] > 0.3:
+                                st.info("ℹ️ Moderate relevance - good insertion point")
+                            else:
+                                st.warning("⚠️ Lower relevance - consider if this entity fits your content theme")
+                                
+                        else:
+                            st.markdown("**🤔 No strongly relevant passage found in your content.**")
+                            st.info(f"Consider adding a new section about '{entity_name}' or expanding existing content to cover this topic.")
+                    
+                    st.divider()
+        
+        # Existing Entity Location Finder (for entities already in your content)
+        st.subheader("📍 Locate Existing Entities in Your Content")
         
         if st.session_state.content_passages.get(primary_url):
             entity_options = [entity['Entity'] for entity in primary_entity_analysis]
             
             selected_entity = st.selectbox(
-                "Select entity to locate in your content:",
-                options=entity_options
+                "Select existing entity to locate in your content:",
+                options=entity_options,
+                key="existing_entity_selector"
             )
             
             if selected_entity:
