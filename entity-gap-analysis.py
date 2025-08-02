@@ -38,7 +38,15 @@ last_request_time = 0
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0"
 ]
 
 def get_random_user_agent(): 
@@ -208,10 +216,26 @@ def find_entity_best_passage(entity_name, passages, model):
         return {"passage": "", "similarity": 0.0, "index": -1}
 
 # --- Content Fetching Functions ---
+def initialize_selenium_driver():
+    """Initialize Selenium driver with stealth configuration."""
+    options = ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    try:
+        driver = webdriver.Chrome(service=ChromeService(), options=options)
+        stealth(driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True)
+        return driver
+    except Exception as e:
+        st.error(f"Selenium initialization failed: {e}")
+        return None
+
 def fetch_content_with_zyte(url, api_key):
     """Fetch content using Zyte API."""
     if not api_key:
-        return fetch_content_with_requests(url)
+        st.error("Zyte API key not configured.")
+        return None
     
     enforce_rate_limit()
     st.write(f"_Fetching with Zyte API: {url}..._")
@@ -231,36 +255,35 @@ def fetch_content_with_zyte(url, api_key):
         else:
             st.error(f"Zyte API did not return content for {url}")
             return None
+            
+    except requests.exceptions.HTTPError as e:
+        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code} - {e.response.text[:200]}")
+        return None
     except Exception as e:
         st.error(f"Zyte API error for {url}: {e}")
-        return fetch_content_with_requests(url)
+        return None
 
-def fetch_content_with_selenium(url):
-    """Fetch content using Selenium."""
-    if not st.session_state.selenium_driver_instance:
-        options = ChromeOptions()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        try:
-            st.session_state.selenium_driver_instance = webdriver.Chrome(service=ChromeService(), options=options)
-            stealth(st.session_state.selenium_driver_instance, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True)
-        except Exception as e:
-            st.error(f"Selenium initialization failed: {e}")
-            return fetch_content_with_requests(url)
-    
+def fetch_content_with_selenium(url, driver_instance):
+    """Fetch content using Selenium with proper fallback."""
+    if not driver_instance: 
+        return fetch_content_with_requests(url)
     try:
         enforce_rate_limit()
-        st.session_state.selenium_driver_instance.get(url)
-        time.sleep(3)
-        return st.session_state.selenium_driver_instance.page_source
+        driver_instance.get(url)
+        time.sleep(5)
+        return driver_instance.page_source
     except Exception as e:
-        st.error(f"Selenium error for {url}: {e}")
-        return fetch_content_with_requests(url)
+        st.error(f"Selenium fetch error for {url}: {e}")
+        st.session_state.selenium_driver_instance = None
+        st.warning(f"Selenium failed for {url}. Falling back to requests.")
+        try: 
+            return fetch_content_with_requests(url)
+        except Exception as req_e: 
+            st.error(f"Requests fallback also failed for {url}: {req_e}")
+            return None
 
 def fetch_content_with_requests(url):
-    """Fetch content using requests."""
+    """Fetch content using requests with user agent rotation."""
     enforce_rate_limit()
     headers = {'User-Agent': get_random_user_agent()}
     try:
@@ -353,15 +376,20 @@ if st.session_state.processing:
         url_content = {}
         url_entities = {}
         
+        # Initialize Selenium if needed
+        if scraping_method.startswith("Selenium") and not st.session_state.selenium_driver_instance:
+            with st.spinner("Initializing Selenium WebDriver..."): 
+                st.session_state.selenium_driver_instance = initialize_selenium_driver()
+        
         with st.spinner(f"Fetching content from {len(all_urls)} URLs..."):
             for i, url in enumerate(all_urls):
                 st.write(f"Fetching {i+1}/{len(all_urls)}: {url}")
                 
-                # Choose fetching method
+                # Choose fetching method based on user selection and API availability
                 if scraping_method.startswith("Zyte") and st.session_state.zyte_api_configured:
                     content = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
                 elif scraping_method.startswith("Selenium"):
-                    content = fetch_content_with_selenium(url)
+                    content = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
                 else:
                     content = fetch_content_with_requests(url)
                 
@@ -540,75 +568,179 @@ if st.session_state.entity_analysis_results:
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
             st.subheader("📍 Where to Add Missing Entities in Your Content")
-            st.markdown("_Find the most relevant passages in your content for each missing entity, sorted by combined score._")
+            st.markdown("_Find the most relevant passages in your content for each missing entity, sorted by query relevance._")
             
             passages = st.session_state.content_passages[primary_url]
             
-            # Sort missing entities by combined score (highest first)
-            sorted_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)
+            # Sort missing entities by query relevance (highest first)
+            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
             
-            # Show top N missing entities
-            num_to_show = st.slider("Number of missing entities to analyze:", 1, min(10, len(sorted_missing)), min(5, len(sorted_missing)))
+            # Create searchable dropdown for entity selection
+            col1, col2 = st.columns([2, 1])
             
-            for i, entity_info in enumerate(sorted_missing[:num_to_show]):
-                entity_name = entity_info['Entity']
-                combined_score = entity_info['Combined Score']
-                query_relevance = entity_info['Query Relevance']
-                document_salience = entity_info['Document Salience']
+            with col1:
+                # Create entity options with scores for the dropdown
+                entity_options = []
+                entity_lookup = {}
                 
-                # Find best passage for this missing entity
-                best_passage_info = find_entity_best_passage(
-                    entity_name, 
-                    passages, 
-                    st.session_state.embedding_model
-                )
-                
-                # Create expandable section for each entity
-                relevance_icon = "🔥" if combined_score > 0.7 else "🟡" if combined_score > 0.4 else "🔵"
-                
-                with st.expander(f"{relevance_icon} **{entity_name}** (Combined Score: {combined_score:.3f})", expanded=(i < 3)):
-                    col1, col2 = st.columns([1, 2])
+                for entity_info in sorted_missing:
+                    entity_name = entity_info['Entity']
+                    query_relevance = entity_info['Query Relevance']
+                    combined_score = entity_info['Combined Score']
                     
-                    with col1:
-                        st.markdown("**📊 Entity Info:**")
+                    # Create display name with scores
+                    display_name = f"{entity_name} (Query: {query_relevance:.3f}, Combined: {combined_score:.3f})"
+                    entity_options.append(display_name)
+                    entity_lookup[display_name] = entity_info
+                
+                # Searchable selectbox
+                selected_entity_display = st.selectbox(
+                    "🔍 Search and select missing entity to analyze:",
+                    options=[""] + entity_options,
+                    index=0,
+                    help="Type to search through missing entities. Sorted by Query Relevance (highest first)."
+                )
+            
+            with col2:
+                # Show bulk analysis option
+                if st.button("📊 Show Top 5 Entities", help="Display analysis for top 5 entities by query relevance"):
+                    selected_entity_display = "SHOW_TOP_5"
+            
+            # Display analysis based on selection
+            if selected_entity_display and selected_entity_display != "":
+                if selected_entity_display == "SHOW_TOP_5":
+                    # Show top 5 entities
+                    st.markdown("**🔥 Top 5 Missing Entities by Query Relevance:**")
+                    
+                    for i, entity_info in enumerate(sorted_missing[:5]):
+                        entity_name = entity_info['Entity']
+                        combined_score = entity_info['Combined Score']
+                        query_relevance = entity_info['Query Relevance']
+                        document_salience = entity_info['Document Salience']
+                        
+                        # Find best passage for this missing entity
+                        best_passage_info = find_entity_best_passage(
+                            entity_name, 
+                            passages, 
+                            st.session_state.embedding_model
+                        )
+                        
+                        # Create expandable section for each entity
+                        relevance_icon = "🔥" if query_relevance > 0.7 else "🟡" if query_relevance > 0.4 else "🔵"
+                        
+                        with st.expander(f"{relevance_icon} **#{i+1}: {entity_name}** (Query Relevance: {query_relevance:.3f})", expanded=(i < 2)):
+                            col_a, col_b = st.columns([1, 2])
+                            
+                            with col_a:
+                                st.markdown("**📊 Entity Info:**")
+                                st.markdown(f"- **Type:** {entity_info['Type']}")
+                                st.markdown(f"- **Query Relevance:** {query_relevance:.3f}")
+                                st.markdown(f"- **Combined Score:** {combined_score:.3f}")
+                                st.markdown(f"- **Document Salience:** {document_salience:.3f}")
+                                st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
+                                st.markdown(f"- **Competitors:** {entity_info['URLs']}")
+                            
+                            with col_b:
+                                if best_passage_info["similarity"] > 0.1:
+                                    st.markdown("**🎯 Best place to add this entity:**")
+                                    st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
+                                    
+                                    passage_text = best_passage_info["passage"]
+                                    st.markdown("**📝 Suggested insertion location:**")
+                                    st.text_area(
+                                        "Passage text:",
+                                        value=passage_text,
+                                        height=80,
+                                        disabled=True,
+                                        key=f"bulk_passage_{i}_{entity_name.replace(' ', '_')}"
+                                    )
+                                    
+                                    if best_passage_info["similarity"] > 0.5:
+                                        st.success("✅ High semantic relevance")
+                                    elif best_passage_info["similarity"] > 0.3:
+                                        st.info("ℹ️ Moderate relevance")
+                                    else:
+                                        st.warning("⚠️ Lower relevance")
+                                else:
+                                    st.markdown("**🤔 No strongly relevant passage found.**")
+                                    st.info(f"Consider adding a new section about '{entity_name}'.")
+                            
+                            st.divider()
+                
+                else:
+                    # Show detailed analysis for selected entity
+                    entity_info = entity_lookup[selected_entity_display]
+                    entity_name = entity_info['Entity']
+                    combined_score = entity_info['Combined Score']
+                    query_relevance = entity_info['Query Relevance']
+                    document_salience = entity_info['Document Salience']
+                    
+                    # Find best passage for this missing entity
+                    best_passage_info = find_entity_best_passage(
+                        entity_name, 
+                        passages, 
+                        st.session_state.embedding_model
+                    )
+                    
+                    st.markdown(f"### 🎯 Analysis for: **{entity_name}**")
+                    
+                    col_a, col_b = st.columns([1, 2])
+                    
+                    with col_a:
+                        st.markdown("**📊 Entity Metrics:**")
+                        
+                        # Progress bars for scores
+                        st.metric("Query Relevance", f"{query_relevance:.3f}")
+                        st.progress(query_relevance)
+                        
+                        st.metric("Combined Score", f"{combined_score:.3f}")
+                        st.progress(combined_score)
+                        
+                        st.metric("Document Salience", f"{document_salience:.3f}")
+                        st.progress(document_salience)
+                        
+                        st.markdown("**🏢 Competitor Info:**")
                         st.markdown(f"- **Type:** {entity_info['Type']}")
-                        st.markdown(f"- **Combined Score:** {combined_score:.3f}")
-                        st.markdown(f"- **Document Salience:** {document_salience:.3f}")
-                        st.markdown(f"- **Query Relevance:** {query_relevance:.3f}")
                         st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
                         st.markdown(f"- **Competitors:** {entity_info['URLs']}")
                     
-                    with col2:
-                        if best_passage_info["similarity"] > 0.1:  # Lower threshold for missing entities
-                            st.markdown("**🎯 Best place to add this entity in your content:**")
-                            st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
+                    with col_b:
+                        if best_passage_info["similarity"] > 0.1:
+                            st.markdown("**🎯 Recommended Insertion Location:**")
+                            st.markdown(f"**Content Relevance Score:** {best_passage_info['similarity']:.3f}")
                             
-                            # Show the passage with text wrapping
                             passage_text = best_passage_info["passage"]
                             
-                            st.markdown("**📝 Suggested insertion location:**")
-                            # Use text area for proper wrapping instead of code block
                             st.text_area(
-                                "Passage text:",
+                                "Best passage for adding this entity:",
                                 value=passage_text,
-                                height=100,
+                                height=120,
                                 disabled=True,
-                                key=f"passage_{i}_{entity_name.replace(' ', '_')}"
+                                key=f"selected_passage_{entity_name.replace(' ', '_')}"
                             )
                             
-                            # Provide context about why this location
+                            # Quality assessment
                             if best_passage_info["similarity"] > 0.5:
-                                st.success("✅ High semantic relevance - excellent insertion point")
+                                st.success("✅ **Excellent insertion point** - High semantic relevance")
+                                st.markdown("💡 **Recommendation:** This entity fits naturally into this section.")
                             elif best_passage_info["similarity"] > 0.3:
-                                st.info("ℹ️ Moderate relevance - good insertion point")
+                                st.info("ℹ️ **Good insertion point** - Moderate relevance")
+                                st.markdown("💡 **Recommendation:** Consider expanding this section to include this entity.")
                             else:
-                                st.warning("⚠️ Lower relevance - consider if this entity fits your content theme")
-                                
+                                st.warning("⚠️ **Lower relevance** - Consider content fit")
+                                st.markdown("💡 **Recommendation:** Evaluate if this entity aligns with your content theme.")
                         else:
                             st.markdown("**🤔 No strongly relevant passage found in your content.**")
-                            st.info(f"Consider adding a new section about '{entity_name}' or expanding existing content to cover this topic.")
-                    
-                    st.divider()
+                            st.info(f"**Recommendation:** Consider adding a new section specifically about '{entity_name}' or expanding existing content to cover this topic.")
+                            
+                            # Show entity importance context
+                            if query_relevance > 0.7:
+                                st.error("⚠️ **High Priority Gap:** This entity is very relevant to your target query but missing from your content.")
+                            elif query_relevance > 0.4:
+                                st.warning("⚠️ **Medium Priority Gap:** This entity has moderate relevance to your target query.")
+            
+            else:
+                st.info("👆 Select a missing entity above to see detailed insertion recommendations, or click 'Show Top 5 Entities' for a quick overview.")
         
         # Existing Entity Location Finder (for entities already in your content)
         st.subheader("📍 Locate Existing Entities in Your Content")
