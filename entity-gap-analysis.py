@@ -120,7 +120,114 @@ else:
 st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**")
 
 # --- Core Functions ---
-@st.cache_data(show_spinner="Extracting entities...")
+def get_wikipedia_url(entity_name, max_retries=2):
+    """
+    Get Wikipedia URL for an entity name.
+    Returns (wikipedia_url, cleaned_title) if found, (None, None) if not found.
+    """
+    import urllib.parse
+    
+    for attempt in range(max_retries):
+        try:
+            # Clean entity name for Wikipedia search
+            search_term = entity_name.strip()
+            
+            # Wikipedia API search endpoint
+            search_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(search_term.replace(" ", "_"))
+            
+            headers = {
+                'User-Agent': 'Entity-Gap-Analysis-Tool/1.0 (https://theseoconsultant.ai/)'
+            }
+            
+            response = requests.get(search_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Check if it's a valid page (not disambiguation or redirect without content)
+                if 'extract' in data and data.get('type') == 'standard':
+                    wikipedia_url = data.get('content_urls', {}).get('desktop', {}).get('page', '')
+                    clean_title = data.get('title', entity_name)
+                    
+                    if wikipedia_url:
+                        return wikipedia_url, clean_title
+            
+            # If exact match fails, try Wikipedia search API
+            if attempt == 0:
+                search_api_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(search_term)}"
+                try:
+                    response = requests.get(search_api_url, headers=headers, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if 'extract' in data and data.get('type') == 'standard':
+                            wikipedia_url = data.get('content_urls', {}).get('desktop', {}).get('page', '')
+                            clean_title = data.get('title', entity_name)
+                            if wikipedia_url:
+                                return wikipedia_url, clean_title
+                except:
+                    continue
+                    
+        except Exception as e:
+            if attempt == max_retries - 1:
+                # Only log error on final attempt
+                pass
+            continue
+    
+    return None, None
+
+@st.cache_data(show_spinner="Validating entities with Wikipedia...")
+def filter_entities_with_wikipedia(entities_dict, _credentials_info=None):
+    """
+    Filter entities to only include those with Wikipedia entries.
+    Returns: (filtered_entities_dict, wikipedia_mapping)
+    """
+    filtered_entities = {}
+    wikipedia_mapping = {}
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total_entities = len(entities_dict)
+    processed = 0
+    found_count = 0
+    
+    for entity_key, entity_data in entities_dict.items():
+        entity_name = entity_data['name']
+        
+        # Update progress
+        progress_bar.progress(processed / total_entities)
+        status_text.text(f"Checking Wikipedia for: {entity_name[:50]}...")
+        
+        # Check Wikipedia
+        wikipedia_url, clean_title = get_wikipedia_url(entity_name)
+        
+        if wikipedia_url:
+            # Entity has Wikipedia entry - keep it
+            filtered_entities[entity_key] = entity_data.copy()
+            # Update entity name with clean Wikipedia title if different
+            if clean_title and clean_title != entity_name:
+                filtered_entities[entity_key]['name'] = clean_title
+                filtered_entities[entity_key]['original_name'] = entity_name
+            
+            wikipedia_mapping[entity_key] = {
+                'url': wikipedia_url,
+                'title': clean_title or entity_name
+            }
+            found_count += 1
+        
+        processed += 1
+        
+        # Add small delay to avoid overwhelming Wikipedia API
+        time.sleep(0.1)
+    
+    # Clear progress indicators
+    progress_bar.empty()
+    status_text.empty()
+    
+    st.success(f"✅ Found {found_count} entities with Wikipedia entries out of {total_entities} total entities")
+    
+    return filtered_entities, wikipedia_mapping
+
+@st.cache_data(show_spinner="Extracting entities from text...")
 def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
     """Extracts entities from text using Google Cloud Natural Language API."""
     if not _credentials_info or not text:
@@ -416,9 +523,25 @@ if st.session_state.processing:
         with st.spinner("Extracting entities from all URLs..."):
             for url, content in url_content.items():
                 st.write(f"Extracting entities from: {url}")
-                entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
-                url_entities[url] = entities
-                st.success(f"✅ Found {len(entities)} unique entities")
+                raw_entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
+                
+                if raw_entities:
+                    # Filter entities to only include those with Wikipedia entries
+                    st.write(f"Found {len(raw_entities)} raw entities. Checking Wikipedia...")
+                    filtered_entities, wikipedia_mapping = filter_entities_with_wikipedia(raw_entities, st.session_state.gcp_credentials_info)
+                    
+                    if filtered_entities:
+                        url_entities[url] = filtered_entities
+                        # Store Wikipedia mapping for later use
+                        if 'wikipedia_mappings' not in st.session_state:
+                            st.session_state.wikipedia_mappings = {}
+                        st.session_state.wikipedia_mappings[url] = wikipedia_mapping
+                        
+                        st.success(f"✅ Kept {len(filtered_entities)} entities with Wikipedia entries")
+                    else:
+                        st.warning(f"⚠️ No entities with Wikipedia entries found for {url}")
+                else:
+                    st.warning(f"⚠️ No entities extracted from {url}")
         
         # Store results
         st.session_state.entity_analysis_results = url_entities
@@ -639,6 +762,17 @@ if st.session_state.entity_analysis_results:
                                 st.markdown(f"- **Document Salience:** {document_salience:.3f}")
                                 st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
                                 st.markdown(f"- **Competitors:** {entity_info['URLs']}")
+                                
+                                # Add Wikipedia link
+                                wikipedia_info = st.session_state.get('wikipedia_mappings', {})
+                                for url, mapping in wikipedia_info.items():
+                                    if url != primary_url:
+                                        entity_key = entity_name.lower()
+                                        if entity_key in mapping:
+                                            wiki_url = mapping[entity_key]['url']
+                                            wiki_title = mapping[entity_key]['title']
+                                            st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
+                                            break
                             
                             with col_b:
                                 if best_passage_info["similarity"] > 0.1:
@@ -703,6 +837,17 @@ if st.session_state.entity_analysis_results:
                         st.markdown(f"- **Type:** {entity_info['Type']}")
                         st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
                         st.markdown(f"- **Competitors:** {entity_info['URLs']}")
+                        
+                        # Add Wikipedia link if available
+                        wikipedia_info = st.session_state.get('wikipedia_mappings', {})
+                        for url, mapping in wikipedia_info.items():
+                            if url != primary_url:  # Check competitor URLs
+                                entity_key = entity_name.lower()
+                                if entity_key in mapping:
+                                    wiki_url = mapping[entity_key]['url']
+                                    wiki_title = mapping[entity_key]['title']
+                                    st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
+                                    break
                     
                     with col_b:
                         if best_passage_info["similarity"] > 0.1:
