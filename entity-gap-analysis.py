@@ -1,12 +1,4 @@
-# Entity Relationship Graph
-        if st.session_state.entity_relationships:
-            st.markdown("---")
-            st.subheader("🕸️ Entity Relationship Graph")
-            st.markdown("_Visualize how your existing entities relate to missing entities and your target query_")
-            
-            # Entity selection for highlighting
-            missing_entity_names = [entity['Entity'] for entity in missing_entities]
-            import streamlit as st
+import streamlit as st
 import requests
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -14,7 +6,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.figure_factory as ff
 import time
 import random
 import base64
@@ -53,13 +44,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0"
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
 ]
 
 def get_random_user_agent(): 
@@ -99,7 +84,7 @@ with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.g
             st.session_state.gcp_nlp_configured = False
             st.session_state.gcp_credentials_info = None
 
-with st.sidebar.expander("Zyte API (Optional - for tough sites)", expanded=False):
+with st.sidebar.expander("Zyte API (Optional)", expanded=False):
     zyte_api_key_input = st.text_input("Enter Zyte API Key:", type="password", value=st.session_state.get("zyte_api_key_to_persist", ""), disabled=st.session_state.processing)
     if st.button("Set & Verify Zyte Key", disabled=st.session_state.processing):
         if zyte_api_key_input:
@@ -133,6 +118,39 @@ else:
 st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**")
 
 # --- Core Functions ---
+def is_number_entity(entity_name):
+    """Check if an entity is primarily numeric and should be filtered out."""
+    if not entity_name:
+        return True
+    
+    # Remove common separators and whitespace
+    cleaned = re.sub(r'[,\s\-\.]', '', entity_name)
+    
+    # Check if it's purely numeric
+    if cleaned.isdigit():
+        return True
+    
+    # Check if it's a percentage
+    if entity_name.strip().endswith('%') and re.sub(r'[%,\s\-\.]', '', entity_name).isdigit():
+        return True
+    
+    # Check if it's a year (4 digits)
+    if re.match(r'^\d{4}$', cleaned):
+        return True
+    
+    # Check if it's mostly numeric (>70% digits)
+    digit_count = sum(1 for char in entity_name if char.isdigit())
+    total_chars = len(re.sub(r'\s', '', entity_name))
+    
+    if total_chars > 0 and (digit_count / total_chars) > 0.7:
+        return True
+    
+    # Filter out very short numeric-heavy entities
+    if len(entity_name.strip()) <= 4 and any(char.isdigit() for char in entity_name):
+        return True
+    
+    return False
+
 @st.cache_data(show_spinner="Extracting entities...")
 def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
     """Extracts entities from text using Google Cloud Natural Language API."""
@@ -143,8 +161,7 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
         credentials = service_account.Credentials.from_service_account_info(_credentials_info)
         client = language_v1.LanguageServiceClient(credentials=credentials)
         
-        # Truncate if needed
-        max_bytes = 900000  # Leave some buffer
+        max_bytes = 900000
         text_bytes = text.encode('utf-8')
         if len(text_bytes) > max_bytes:
             text = text_bytes[:max_bytes].decode('utf-8', 'ignore')
@@ -155,10 +172,16 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
         
         entities_dict = {}
         for entity in response.entities:
-            key = entity.name.lower()
+            entity_name = entity.name.strip()
+            
+            # Filter out number entities
+            if is_number_entity(entity_name):
+                continue
+                
+            key = entity_name.lower()
             if key not in entities_dict or entity.salience > entities_dict[key]['salience']:
                 entities_dict[key] = {
-                    'name': entity.name,
+                    'name': entity_name,
                     'type': language_v1.Entity.Type(entity.type_).name,
                     'salience': entity.salience,
                     'mentions': len(entity.mentions)
@@ -169,273 +192,16 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
         st.error(f"Google Cloud NLP API Error: {e}")
         return {}
 
-def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query):
-    """Calculate relationships between primary entities and missing entities."""
-    if not embedding_model:
-        return {}
-    
-    relationships = {
-        'primary_entities': [],
-        'missing_entities': [],
-        'edges': [],
-        'query_entity': target_query
-    }
-    
-    try:
-        # Prepare entity lists
-        primary_names = [entity['name'] for entity in primary_entities]
-        missing_names = [entity['name'] for entity in missing_entities]
-        all_entity_names = primary_names + missing_names + [target_query]
-        
-        # Calculate embeddings for all entities
-        if not all_entity_names:
-            return relationships
-            
-        entity_embeddings = embedding_model.encode(all_entity_names)
-        
-        # Calculate similarity matrix
-        similarity_matrix = cosine_similarity(entity_embeddings)
-        
-        # Add primary entities to graph
-        for i, entity in enumerate(primary_entities):
-            relationships['primary_entities'].append({
-                'id': f"primary_{i}",
-                'name': entity['name'],
-                'type': entity.get('type', 'UNKNOWN'),
-                'salience': entity.get('document_salience', entity.get('salience', 0)),
-                'query_relevance': entity.get('query_relevance', 0),
-                'combined_score': entity.get('combined_score', 0),
-                'node_type': 'primary'
-            })
-        
-        # Add missing entities to graph
-        for i, entity in enumerate(missing_entities):
-            relationships['missing_entities'].append({
-                'id': f"missing_{i}",
-                'name': entity['name'],
-                'type': entity.get('type', 'UNKNOWN'),
-                'salience': entity.get('document_salience', entity.get('salience', 0)),
-                'query_relevance': entity.get('query_relevance', 0),
-                'combined_score': entity.get('combined_score', 0),
-                'node_type': 'missing'
-            })
-        
-        # Calculate edges (relationships) with similarity threshold
-        similarity_threshold = 0.3  # Only show meaningful relationships
-        
-        # Primary to missing entity relationships
-        for i, primary_entity in enumerate(primary_entities):
-            primary_idx = i
-            for j, missing_entity in enumerate(missing_entities):
-                missing_idx = len(primary_names) + j
-                similarity = similarity_matrix[primary_idx][missing_idx]
-                
-                if similarity > similarity_threshold:
-                    relationships['edges'].append({
-                        'source': f"primary_{i}",
-                        'target': f"missing_{j}",
-                        'weight': float(similarity),
-                        'type': 'primary_to_missing'
-                    })
-        
-        # Query to entity relationships
-        query_idx = len(all_entity_names) - 1
-        
-        # Query to primary entities
-        for i, primary_entity in enumerate(primary_entities):
-            similarity = similarity_matrix[i][query_idx]
-            if similarity > similarity_threshold:
-                relationships['edges'].append({
-                    'source': 'query',
-                    'target': f"primary_{i}",
-                    'weight': float(similarity),
-                    'type': 'query_to_primary'
-                })
-        
-        # Query to missing entities
-        for j, missing_entity in enumerate(missing_entities):
-            missing_idx = len(primary_names) + j
-            similarity = similarity_matrix[missing_idx][query_idx]
-            if similarity > similarity_threshold:
-                relationships['edges'].append({
-                    'source': 'query',
-                    'target': f"missing_{j}",
-                    'weight': float(similarity),
-                    'type': 'query_to_missing'
-                })
-        
-        return relationships
-        
-    except Exception as e:
-        st.error(f"Error calculating entity relationships: {e}")
-        return relationships
-
-def create_entity_relationship_graph(relationships, selected_missing_entity=None):
-    """Create an interactive entity relationship graph using Plotly."""
-    
-    if not relationships or (not relationships['primary_entities'] and not relationships['missing_entities']):
-        return None
-    
-    # Create NetworkX graph for layout calculation
-    G = nx.Graph()
-    
-    # Add nodes
-    all_entities = relationships['primary_entities'] + relationships['missing_entities']
-    
-    # Add query node
-    G.add_node('query', node_type='query')
-    
-    for entity in all_entities:
-        G.add_node(entity['id'], **entity)
-    
-    # Add edges
-    for edge in relationships['edges']:
-        G.add_edge(edge['source'], edge['target'], weight=edge['weight'])
-    
-    # Calculate layout
-    try:
-        pos = nx.spring_layout(G, k=3, iterations=50, seed=42)
-    except:
-        # Fallback to circular layout if spring layout fails
-        pos = nx.circular_layout(G)
-    
-    # Prepare data for Plotly
-    edge_x = []
-    edge_y = []
-    edge_info = []
-    
-    for edge in relationships['edges']:
-        source = edge['source']
-        target = edge['target']
-        
-        if source in pos and target in pos:
-            x0, y0 = pos[source]
-            x1, y1 = pos[target]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
-            edge_info.append(f"{source} → {target}<br>Similarity: {edge['weight']:.3f}")
-    
-    # Create edge trace
-    edge_trace = go.Scatter(
-        x=edge_x, y=edge_y,
-        line=dict(width=1, color='rgba(125,125,125,0.5)'),
-        hoverinfo='none',
-        mode='lines',
-        showlegend=False
-    )
-    
-    # Prepare node data
-    node_x = []
-    node_y = []
-    node_text = []
-    node_colors = []
-    node_sizes = []
-    node_info = []
-    
-    # Add query node
-    if 'query' in pos:
-        qx, qy = pos['query']
-        node_x.append(qx)
-        node_y.append(qy)
-        node_text.append(f"🎯 {relationships['query_entity']}")
-        node_colors.append('gold')
-        node_sizes.append(25)
-        node_info.append(f"<b>Target Query</b><br>{relationships['query_entity']}")
-    
-    # Add entity nodes
-    for entity in all_entities:
-        if entity['id'] in pos:
-            x, y = pos[entity['id']]
-            node_x.append(x)
-            node_y.append(y)
-            
-            # Node styling based on type and selection
-            if entity['node_type'] == 'primary':
-                color = 'lightblue'
-                icon = '🔵'
-                size = 15 + (entity.get('combined_score', 0) * 10)
-            else:  # missing entity
-                if selected_missing_entity and entity['name'] == selected_missing_entity:
-                    color = 'red'  # Highlight selected missing entity
-                    icon = '🔴'
-                    size = 25
-                else:
-                    color = 'orange'
-                    icon = '🟠'
-                    size = 15 + (entity.get('combined_score', 0) * 10)
-            
-            # Truncate long names for display
-            display_name = entity['name']
-            if len(display_name) > 25:
-                display_name = display_name[:22] + "..."
-            
-            node_text.append(f"{icon} {display_name}")
-            node_colors.append(color)
-            node_sizes.append(size)
-            
-            # Hover info
-            node_info.append(
-                f"<b>{entity['name']}</b><br>"
-                f"Type: {entity['type']}<br>"
-                f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
-                f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
-                f"Status: {'In Your Content' if entity['node_type'] == 'primary' else 'Missing (Competitor)'}"
-            )
-    
-    # Create node trace
-    node_trace = go.Scatter(
-        x=node_x, y=node_y,
-        mode='markers+text',
-        hoverinfo='text',
-        hovertext=node_info,
-        text=node_text,
-        textposition="middle center",
-        marker=dict(
-            size=node_sizes,
-            color=node_colors,
-            line=dict(width=2, color='white')
-        ),
-        textfont=dict(size=10),
-        showlegend=False
-    )
-    
-    # Create figure
-    fig = go.Figure(data=[edge_trace, node_trace],
-                   layout=go.Layout(
-                        title=dict(
-                            text=f"Entity Relationship Graph for Primary URL",
-                            x=0.5,
-                            font=dict(size=16)
-                        ),
-                        titlefont_size=16,
-                        showlegend=False,
-                        hovermode='closest',
-                        margin=dict(b=20,l=5,r=5,t=40),
-                        annotations=[ dict(
-                            text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity",
-                            showarrow=False,
-                            xref="paper", yref="paper",
-                            x=0.005, y=-0.002,
-                            xanchor='left', yanchor='bottom',
-                            font=dict(size=10)
-                        )],
-                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        plot_bgcolor='white'
-                        ))
-    
-    return fig
-
 @st.cache_resource
 def load_embedding_model():
     """Load a lightweight embedding model for query similarity."""
     try:
-        return SentenceTransformer('all-MiniLM-L6-v2')  # Fast, lightweight model
+        return SentenceTransformer('all-MiniLM-L6-v2')
     except Exception as e:
         st.error(f"Failed to load embedding model: {e}")
         return None
 
-def calculate_entity_query_similarity(entity_name, query_text, model):
+def calculate_entity_query_relevance(entity_name, query_text, model):
     """Calculate similarity between entity and target query."""
     if not model or not entity_name or not query_text:
         return 0.0
@@ -527,7 +293,7 @@ def fetch_content_with_zyte(url, api_key):
             return None
             
     except requests.exceptions.HTTPError as e:
-        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code} - {e.response.text[:200]}")
+        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code}")
         return None
     except Exception as e:
         st.error(f"Zyte API error for {url}: {e}")
@@ -655,7 +421,7 @@ if st.session_state.processing:
             for i, url in enumerate(all_urls):
                 st.write(f"Fetching {i+1}/{len(all_urls)}: {url}")
                 
-                # Choose fetching method based on user selection and API availability
+                # Choose fetching method
                 if scraping_method.startswith("Zyte") and st.session_state.zyte_api_configured:
                     content = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
                 elif scraping_method.startswith("Selenium"):
@@ -698,7 +464,7 @@ if st.session_state.processing:
         st.session_state.entity_analysis_results = url_entities
         st.session_state.content_passages = {}
         
-        # Split primary URL content into passages for highlighting
+        # Split primary URL content into passages
         if primary_url in url_content:
             passages = split_text_into_passages(url_content[primary_url])
             st.session_state.content_passages[primary_url] = passages
@@ -739,13 +505,13 @@ if st.session_state.entity_analysis_results:
         for entity_key, comp_data in competitor_entities.items():
             if entity_key not in primary_entity_keys:
                 # Calculate query relevance
-                query_similarity = calculate_entity_query_similarity(
+                query_similarity = calculate_entity_query_relevance(
                     comp_data['data']['name'], 
                     target_query, 
                     st.session_state.embedding_model
                 )
                 
-                # Calculate combined score (consistent with primary URL entities)
+                # Calculate combined score
                 combined_score = (comp_data['data']['salience'] + query_similarity) / 2
                 
                 missing_entities.append({
@@ -797,7 +563,7 @@ if st.session_state.entity_analysis_results:
         
         primary_entity_analysis = []
         for entity_key, entity_data in primary_entities.items():
-            query_similarity = calculate_entity_query_similarity(
+            query_similarity = calculate_entity_query_relevance(
                 entity_data['name'], 
                 target_query, 
                 st.session_state.embedding_model
@@ -842,259 +608,78 @@ if st.session_state.entity_analysis_results:
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
             st.subheader("📍 Where to Add Missing Entities in Your Content")
-            st.markdown("_Find the most relevant passages in your content for each missing entity, sorted by query relevance._")
             
             passages = st.session_state.content_passages[primary_url]
-            
-            # Sort missing entities by query relevance (highest first)
             sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
             
-            # Create searchable dropdown for entity selection
-            col1, col2 = st.columns([2, 1])
+            # Entity selection dropdown
+            entity_options = []
+            entity_lookup = {}
             
-            with col1:
-                # Create entity options with scores for the dropdown
-                entity_options = []
-                entity_lookup = {}
+            for entity_info in sorted_missing:
+                entity_name = entity_info['Entity']
+                query_relevance = entity_info['Query Relevance']
+                combined_score = entity_info['Combined Score']
                 
-                for entity_info in sorted_missing:
-                    entity_name = entity_info['Entity']
-                    query_relevance = entity_info['Query Relevance']
-                    combined_score = entity_info['Combined Score']
-                    
-                    # Create display name with scores
-                    display_name = f"{entity_name} (Query: {query_relevance:.3f}, Combined: {combined_score:.3f})"
-                    entity_options.append(display_name)
-                    entity_lookup[display_name] = entity_info
-                
-                # Searchable selectbox
-                selected_entity_display = st.selectbox(
-                    "🔍 Search and select missing entity to analyze:",
-                    options=[""] + entity_options,
-                    index=0,
-                    help="Type to search through missing entities. Sorted by Query Relevance (highest first)."
-                )
+                display_name = f"{entity_name} (Query: {query_relevance:.3f})"
+                entity_options.append(display_name)
+                entity_lookup[display_name] = entity_info
             
-            with col2:
-                # Show bulk analysis option
-                if st.button("📊 Show Top 5 Entities", help="Display analysis for top 5 entities by query relevance"):
-                    selected_entity_display = "SHOW_TOP_5"
-            
-            # Display analysis based on selection
-            if selected_entity_display and selected_entity_display != "":
-                if selected_entity_display == "SHOW_TOP_5":
-                    # Show top 5 entities
-                    st.markdown("**🔥 Top 5 Missing Entities by Query Relevance:**")
-                    
-                    for i, entity_info in enumerate(sorted_missing[:5]):
-                        entity_name = entity_info['Entity']
-                        combined_score = entity_info['Combined Score']
-                        query_relevance = entity_info['Query Relevance']
-                        document_salience = entity_info['Document Salience']
-                        
-                        # Find best passage for this missing entity
-                        best_passage_info = find_entity_best_passage(
-                            entity_name, 
-                            passages, 
-                            st.session_state.embedding_model
-                        )
-                        
-                        # Create expandable section for each entity
-                        relevance_icon = "🔥" if query_relevance > 0.7 else "🟡" if query_relevance > 0.4 else "🔵"
-                        
-                        with st.expander(f"{relevance_icon} **#{i+1}: {entity_name}** (Query Relevance: {query_relevance:.3f})", expanded=(i < 2)):
-                            col_a, col_b = st.columns([1, 2])
-                            
-                            with col_a:
-                                st.markdown("**📊 Entity Info:**")
-                                st.markdown(f"- **Type:** {entity_info['Type']}")
-                                st.markdown(f"- **Query Relevance:** {query_relevance:.3f}")
-                                st.markdown(f"- **Combined Score:** {combined_score:.3f}")
-                                st.markdown(f"- **Document Salience:** {document_salience:.3f}")
-                                st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
-                                st.markdown(f"- **Competitors:** {entity_info['URLs']}")
-                                
-                                # Add Wikipedia link if filtering was enabled
-                                if st.session_state.get('enable_wikipedia_filtering', False):
-                                    wikipedia_info = st.session_state.get('wikipedia_mappings', {})
-                                    for url, mapping in wikipedia_info.items():
-                                        if url != primary_url:
-                                            entity_key = entity_name.lower()
-                                            if entity_key in mapping:
-                                                wiki_url = mapping[entity_key]['url']
-                                                wiki_title = mapping[entity_key]['title']
-                                                st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
-                                                break
-                            
-                            with col_b:
-                                if best_passage_info["similarity"] > 0.1:
-                                    st.markdown("**🎯 Best place to add this entity:**")
-                                    st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
-                                    
-                                    passage_text = best_passage_info["passage"]
-                                    st.markdown("**📝 Suggested insertion location:**")
-                                    st.text_area(
-                                        "Passage text:",
-                                        value=passage_text,
-                                        height=80,
-                                        disabled=True,
-                                        key=f"bulk_passage_{i}_{entity_name.replace(' ', '_')}"
-                                    )
-                                    
-                                    if best_passage_info["similarity"] > 0.5:
-                                        st.success("✅ High semantic relevance")
-                                    elif best_passage_info["similarity"] > 0.3:
-                                        st.info("ℹ️ Moderate relevance")
-                                    else:
-                                        st.warning("⚠️ Lower relevance")
-                                else:
-                                    st.markdown("**🤔 No strongly relevant passage found.**")
-                                    st.info(f"Consider adding a new section about '{entity_name}'.")
-                            
-                            st.divider()
-                
-                else:
-                    # Show detailed analysis for selected entity
-                    entity_info = entity_lookup[selected_entity_display]
-                    entity_name = entity_info['Entity']
-                    combined_score = entity_info['Combined Score']
-                    query_relevance = entity_info['Query Relevance']
-                    document_salience = entity_info['Document Salience']
-                    
-                    # Find best passage for this missing entity
-                    best_passage_info = find_entity_best_passage(
-                        entity_name, 
-                        passages, 
-                        st.session_state.embedding_model
-                    )
-                    
-                    st.markdown(f"### 🎯 Analysis for: **{entity_name}**")
-                    
-                    col_a, col_b = st.columns([1, 2])
-                    
-                    with col_a:
-                        st.markdown("**📊 Entity Metrics:**")
-                        
-                        # Progress bars for scores
-                        st.metric("Query Relevance", f"{query_relevance:.3f}")
-                        st.progress(query_relevance)
-                        
-                        st.metric("Combined Score", f"{combined_score:.3f}")
-                        st.progress(combined_score)
-                        
-                        st.metric("Document Salience", f"{document_salience:.3f}")
-                        st.progress(document_salience)
-                        
-                        st.markdown("**🏢 Competitor Info:**")
-                        st.markdown(f"- **Type:** {entity_info['Type']}")
-                        st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
-                        st.markdown(f"- **Competitors:** {entity_info['URLs']}")
-                        
-                        # Add Wikipedia link if available and filtering was enabled
-                        if st.session_state.get('enable_wikipedia_filtering', False):
-                            wikipedia_info = st.session_state.get('wikipedia_mappings', {})
-                            for url, mapping in wikipedia_info.items():
-                                if url != primary_url:  # Check competitor URLs
-                                    entity_key = entity_name.lower()
-                                    if entity_key in mapping:
-                                        wiki_url = mapping[entity_key]['url']
-                                        wiki_title = mapping[entity_key]['title']
-                                        st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
-                                        break
-                    
-                    with col_b:
-                        if best_passage_info["similarity"] > 0.1:
-                            st.markdown("**🎯 Recommended Insertion Location:**")
-                            st.markdown(f"**Content Relevance Score:** {best_passage_info['similarity']:.3f}")
-                            
-                            passage_text = best_passage_info["passage"]
-                            
-                            st.text_area(
-                                "Best passage for adding this entity:",
-                                value=passage_text,
-                                height=120,
-                                disabled=True,
-                                key=f"selected_passage_{entity_name.replace(' ', '_')}"
-                            )
-                            
-                            # Quality assessment
-                            if best_passage_info["similarity"] > 0.5:
-                                st.success("✅ **Excellent insertion point** - High semantic relevance")
-                                st.markdown("💡 **Recommendation:** This entity fits naturally into this section.")
-                            elif best_passage_info["similarity"] > 0.3:
-                                st.info("ℹ️ **Good insertion point** - Moderate relevance")
-                                st.markdown("💡 **Recommendation:** Consider expanding this section to include this entity.")
-                            else:
-                                st.warning("⚠️ **Lower relevance** - Consider content fit")
-                                st.markdown("💡 **Recommendation:** Evaluate if this entity aligns with your content theme.")
-                        else:
-                            st.markdown("**🤔 No strongly relevant passage found in your content.**")
-                            st.info(f"**Recommendation:** Consider adding a new section specifically about '{entity_name}' or expanding existing content to cover this topic.")
-                            
-                            # Show entity importance context
-                            if query_relevance > 0.7:
-                                st.error("⚠️ **High Priority Gap:** This entity is very relevant to your target query but missing from your content.")
-                            elif query_relevance > 0.4:
-                                st.warning("⚠️ **Medium Priority Gap:** This entity has moderate relevance to your target query.")
-            
-            else:
-                st.info("👆 Select a missing entity above to see detailed insertion recommendations, or click 'Show Top 5 Entities' for a quick overview.")
-        
-        # Existing Entity Location Finder (for entities already in your content)
-        st.subheader("📍 Locate Existing Entities in Your Content")
-        
-        if st.session_state.content_passages.get(primary_url):
-            entity_options = [entity['Entity'] for entity in primary_entity_analysis]
-            
-            selected_entity = st.selectbox(
-                "Select existing entity to locate in your content:",
-                options=entity_options,
-                key="existing_entity_selector"
+            selected_entity_display = st.selectbox(
+                "🔍 Select missing entity to analyze:",
+                options=[""] + entity_options,
+                index=0,
+                help="Entities sorted by Query Relevance (highest first)."
             )
             
-            if selected_entity:
-                passages = st.session_state.content_passages[primary_url]
+            if selected_entity_display and selected_entity_display != "":
+                entity_info = entity_lookup[selected_entity_display]
+                entity_name = entity_info['Entity']
+                
+                # Find best passage
                 best_passage_info = find_entity_best_passage(
-                    selected_entity, 
+                    entity_name, 
                     passages, 
                     st.session_state.embedding_model
                 )
                 
-                if best_passage_info["similarity"] > 0:
-                    st.markdown(f"**🎯 Best mention of '{selected_entity}' in your content:**")
-                    st.markdown(f"**Relevance Score:** {best_passage_info['similarity']:.3f}")
+                col_a, col_b = st.columns([1, 2])
+                
+                with col_a:
+                    st.markdown("**📊 Entity Metrics:**")
+                    st.metric("Query Relevance", f"{entity_info['Query Relevance']:.3f}")
+                    st.metric("Combined Score", f"{entity_info['Combined Score']:.3f}")
+                    st.metric("Document Salience", f"{entity_info['Document Salience']:.3f}")
                     
-                    # Highlight the entity name in the passage
-                    highlighted_passage = best_passage_info["passage"]
-                    if selected_entity.lower() in highlighted_passage.lower():
-                        highlighted_passage = re.sub(
-                            f"({re.escape(selected_entity)})", 
-                            r"**\1**", 
-                            highlighted_passage, 
-                            flags=re.IGNORECASE
+                    st.markdown("**🏢 Details:**")
+                    st.markdown(f"- **Type:** {entity_info['Type']}")
+                    st.markdown(f"- **Found on:** {entity_info['Found On']} site(s)")
+                
+                with col_b:
+                    if best_passage_info["similarity"] > 0.1:
+                        st.markdown("**🎯 Recommended Insertion Location:**")
+                        st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
+                        
+                        st.text_area(
+                            "Best passage for adding this entity:",
+                            value=best_passage_info["passage"],
+                            height=120,
+                            disabled=True,
+                            key=f"passage_{entity_name.replace(' ', '_')}"
                         )
-                    
-                    st.markdown(f"> {highlighted_passage}")
-                else:
-                    st.info(f"No strong semantic connection found for '{selected_entity}' in your content passages.")
+                        
+                        if best_passage_info["similarity"] > 0.5:
+                            st.success("✅ **Excellent insertion point**")
+                        elif best_passage_info["similarity"] > 0.3:
+                            st.info("ℹ️ **Good insertion point**")
+                        else:
+                            st.warning("⚠️ **Lower relevance**")
+                    else:
+                        st.markdown("**🤔 No strongly relevant passage found.**")
+                        st.info(f"Consider adding a new section about '{entity_name}'.")
 
 # Footer
 st.sidebar.divider()
-st.sidebar.info("🎯 Entity Gap Analysis Tool v1.0")
+st.sidebar.info("🎯 Entity Gap Analysis Tool v2.0")
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Created by [The SEO Consultant.ai](https://theseoconsultant.ai/)**")
-
-# Help section
-with st.sidebar.expander("❓ How it works", expanded=False):
-    st.markdown("""
-    **This tool helps you find content gaps by:**
-    
-    1. **Extracting entities** from your content and competitors
-    2. **Measuring relevance** to your target search query
-    3. **Identifying gaps** - entities competitors have but you don't
-    4. **Locating entities** in your content for optimization
-    
-    **Entity Salience:** How important an entity is to the document
-    **Query Relevance:** How relevant an entity is to your target query
-    **Combined Score:** Average of both metrics
-    """)
