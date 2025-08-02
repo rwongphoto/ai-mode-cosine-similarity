@@ -443,11 +443,15 @@ if st.session_state.entity_analysis_results:
                     st.session_state.embedding_model
                 )
                 
+                # Calculate combined score (consistent with primary URL entities)
+                combined_score = (comp_data['data']['salience'] + query_similarity) / 2
+                
                 missing_entities.append({
                     'Entity': comp_data['data']['name'],
                     'Type': comp_data['data']['type'],
-                    'Avg Salience': comp_data['data']['salience'],
+                    'Document Salience': comp_data['data']['salience'],
                     'Query Relevance': query_similarity,
+                    'Combined Score': combined_score,
                     'Found On': len(comp_data['found_on']),
                     'URLs': ', '.join([f"`{url.split('//')[-1].split('/')[0]}`" for url in comp_data['found_on'][:2]])
                 })
@@ -457,13 +461,13 @@ if st.session_state.entity_analysis_results:
             st.subheader("❗ Missing Entities (Found in Competitors)")
             
             gap_df = pd.DataFrame(missing_entities)
-            gap_df = gap_df.sort_values('Query Relevance', ascending=False)
+            gap_df = gap_df.sort_values('Combined Score', ascending=False)
             
             st.dataframe(
                 gap_df,
                 use_container_width=True,
                 column_config={
-                    "Avg Salience": st.column_config.ProgressColumn(
+                    "Document Salience": st.column_config.ProgressColumn(
                         "Document Salience",
                         format="%.3f",
                         min_value=0,
@@ -471,6 +475,12 @@ if st.session_state.entity_analysis_results:
                     ),
                     "Query Relevance": st.column_config.ProgressColumn(
                         "Query Relevance",
+                        format="%.3f",
+                        min_value=0,
+                        max_value=1,
+                    ),
+                    "Combined Score": st.column_config.ProgressColumn(
+                        "Combined Score",
                         format="%.3f",
                         min_value=0,
                         max_value=1,
@@ -530,19 +540,21 @@ if st.session_state.entity_analysis_results:
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
             st.subheader("📍 Where to Add Missing Entities in Your Content")
-            st.markdown("_Find the most relevant passages in your content for each missing entity, sorted by query relevance._")
+            st.markdown("_Find the most relevant passages in your content for each missing entity, sorted by combined score._")
             
             passages = st.session_state.content_passages[primary_url]
             
-            # Sort missing entities by query relevance (highest first)
-            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
+            # Sort missing entities by combined score (highest first)
+            sorted_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)
             
             # Show top N missing entities
             num_to_show = st.slider("Number of missing entities to analyze:", 1, min(10, len(sorted_missing)), min(5, len(sorted_missing)))
             
             for i, entity_info in enumerate(sorted_missing[:num_to_show]):
                 entity_name = entity_info['Entity']
+                combined_score = entity_info['Combined Score']
                 query_relevance = entity_info['Query Relevance']
+                document_salience = entity_info['Document Salience']
                 
                 # Find best passage for this missing entity
                 best_passage_info = find_entity_best_passage(
@@ -552,14 +564,16 @@ if st.session_state.entity_analysis_results:
                 )
                 
                 # Create expandable section for each entity
-                relevance_icon = "🔥" if query_relevance > 0.7 else "🟡" if query_relevance > 0.4 else "🔵"
+                relevance_icon = "🔥" if combined_score > 0.7 else "🟡" if combined_score > 0.4 else "🔵"
                 
-                with st.expander(f"{relevance_icon} **{entity_name}** (Query Relevance: {query_relevance:.3f})", expanded=(i < 3)):
+                with st.expander(f"{relevance_icon} **{entity_name}** (Combined Score: {combined_score:.3f})", expanded=(i < 3)):
                     col1, col2 = st.columns([1, 2])
                     
                     with col1:
                         st.markdown("**📊 Entity Info:**")
                         st.markdown(f"- **Type:** {entity_info['Type']}")
+                        st.markdown(f"- **Combined Score:** {combined_score:.3f}")
+                        st.markdown(f"- **Document Salience:** {document_salience:.3f}")
                         st.markdown(f"- **Query Relevance:** {query_relevance:.3f}")
                         st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
                         st.markdown(f"- **Competitors:** {entity_info['URLs']}")
@@ -569,12 +583,18 @@ if st.session_state.entity_analysis_results:
                             st.markdown("**🎯 Best place to add this entity in your content:**")
                             st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
                             
-                            # Highlight potential insertion point
+                            # Show the passage with text wrapping
                             passage_text = best_passage_info["passage"]
                             
-                            # Show the passage with suggested insertion styling
                             st.markdown("**📝 Suggested insertion location:**")
-                            st.markdown(f"```\n{passage_text}\n```")
+                            # Use text area for proper wrapping instead of code block
+                            st.text_area(
+                                "Passage text:",
+                                value=passage_text,
+                                height=100,
+                                disabled=True,
+                                key=f"passage_{i}_{entity_name.replace(' ', '_')}"
+                            )
                             
                             # Provide context about why this location
                             if best_passage_info["similarity"] > 0.5:
