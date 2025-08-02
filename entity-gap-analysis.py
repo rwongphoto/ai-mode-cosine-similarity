@@ -1,9 +1,20 @@
-import streamlit as st
+# Entity Relationship Graph
+        if st.session_state.entity_relationships:
+            st.markdown("---")
+            st.subheader("🕸️ Entity Relationship Graph")
+            st.markdown("_Visualize how your existing entities relate to missing entities and your target query_")
+            
+            # Entity selection for highlighting
+            missing_entity_names = [entity['Entity'] for entity in missing_entities]
+            import streamlit as st
 import requests
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.figure_factory as ff
 import time
 import random
 import base64
@@ -14,6 +25,7 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 from selenium_stealth import stealth
+import networkx as nx
 
 # Google Cloud NLP libraries
 from google.cloud import language_v1
@@ -31,6 +43,7 @@ if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_conf
 if "entity_analysis_results" not in st.session_state: st.session_state.entity_analysis_results = None
 if "content_passages" not in st.session_state: st.session_state.content_passages = None
 if "embedding_model" not in st.session_state: st.session_state.embedding_model = None
+if "entity_relationships" not in st.session_state: st.session_state.entity_relationships = None
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -120,114 +133,7 @@ else:
 st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**")
 
 # --- Core Functions ---
-def get_wikipedia_url(entity_name, max_retries=2):
-    """
-    Get Wikipedia URL for an entity name.
-    Returns (wikipedia_url, cleaned_title) if found, (None, None) if not found.
-    """
-    import urllib.parse
-    
-    for attempt in range(max_retries):
-        try:
-            # Clean entity name for Wikipedia search
-            search_term = entity_name.strip()
-            
-            # Wikipedia API search endpoint
-            search_url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + urllib.parse.quote(search_term.replace(" ", "_"))
-            
-            headers = {
-                'User-Agent': 'Entity-Gap-Analysis-Tool/1.0 (https://theseoconsultant.ai/)'
-            }
-            
-            response = requests.get(search_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                # Check if it's a valid page (not disambiguation or redirect without content)
-                if 'extract' in data and data.get('type') == 'standard':
-                    wikipedia_url = data.get('content_urls', {}).get('desktop', {}).get('page', '')
-                    clean_title = data.get('title', entity_name)
-                    
-                    if wikipedia_url:
-                        return wikipedia_url, clean_title
-            
-            # If exact match fails, try Wikipedia search API
-            if attempt == 0:
-                search_api_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(search_term)}"
-                try:
-                    response = requests.get(search_api_url, headers=headers, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if 'extract' in data and data.get('type') == 'standard':
-                            wikipedia_url = data.get('content_urls', {}).get('desktop', {}).get('page', '')
-                            clean_title = data.get('title', entity_name)
-                            if wikipedia_url:
-                                return wikipedia_url, clean_title
-                except:
-                    continue
-                    
-        except Exception as e:
-            if attempt == max_retries - 1:
-                # Only log error on final attempt
-                pass
-            continue
-    
-    return None, None
-
-@st.cache_data(show_spinner="Validating entities with Wikipedia...")
-def filter_entities_with_wikipedia(entities_dict, _credentials_info=None):
-    """
-    Filter entities to only include those with Wikipedia entries.
-    Returns: (filtered_entities_dict, wikipedia_mapping)
-    """
-    filtered_entities = {}
-    wikipedia_mapping = {}
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total_entities = len(entities_dict)
-    processed = 0
-    found_count = 0
-    
-    for entity_key, entity_data in entities_dict.items():
-        entity_name = entity_data['name']
-        
-        # Update progress
-        progress_bar.progress(processed / total_entities)
-        status_text.text(f"Checking Wikipedia for: {entity_name[:50]}...")
-        
-        # Check Wikipedia
-        wikipedia_url, clean_title = get_wikipedia_url(entity_name)
-        
-        if wikipedia_url:
-            # Entity has Wikipedia entry - keep it
-            filtered_entities[entity_key] = entity_data.copy()
-            # Update entity name with clean Wikipedia title if different
-            if clean_title and clean_title != entity_name:
-                filtered_entities[entity_key]['name'] = clean_title
-                filtered_entities[entity_key]['original_name'] = entity_name
-            
-            wikipedia_mapping[entity_key] = {
-                'url': wikipedia_url,
-                'title': clean_title or entity_name
-            }
-            found_count += 1
-        
-        processed += 1
-        
-        # Add small delay to avoid overwhelming Wikipedia API
-        time.sleep(0.1)
-    
-    # Clear progress indicators
-    progress_bar.empty()
-    status_text.empty()
-    
-    st.success(f"✅ Found {found_count} entities with Wikipedia entries out of {total_entities} total entities")
-    
-    return filtered_entities, wikipedia_mapping
-
-@st.cache_data(show_spinner="Extracting entities from text...")
+@st.cache_data(show_spinner="Extracting entities...")
 def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
     """Extracts entities from text using Google Cloud Natural Language API."""
     if not _credentials_info or not text:
@@ -262,6 +168,263 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
     except Exception as e:
         st.error(f"Google Cloud NLP API Error: {e}")
         return {}
+
+def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query):
+    """Calculate relationships between primary entities and missing entities."""
+    if not embedding_model:
+        return {}
+    
+    relationships = {
+        'primary_entities': [],
+        'missing_entities': [],
+        'edges': [],
+        'query_entity': target_query
+    }
+    
+    try:
+        # Prepare entity lists
+        primary_names = [entity['name'] for entity in primary_entities]
+        missing_names = [entity['name'] for entity in missing_entities]
+        all_entity_names = primary_names + missing_names + [target_query]
+        
+        # Calculate embeddings for all entities
+        if not all_entity_names:
+            return relationships
+            
+        entity_embeddings = embedding_model.encode(all_entity_names)
+        
+        # Calculate similarity matrix
+        similarity_matrix = cosine_similarity(entity_embeddings)
+        
+        # Add primary entities to graph
+        for i, entity in enumerate(primary_entities):
+            relationships['primary_entities'].append({
+                'id': f"primary_{i}",
+                'name': entity['name'],
+                'type': entity.get('type', 'UNKNOWN'),
+                'salience': entity.get('document_salience', entity.get('salience', 0)),
+                'query_relevance': entity.get('query_relevance', 0),
+                'combined_score': entity.get('combined_score', 0),
+                'node_type': 'primary'
+            })
+        
+        # Add missing entities to graph
+        for i, entity in enumerate(missing_entities):
+            relationships['missing_entities'].append({
+                'id': f"missing_{i}",
+                'name': entity['name'],
+                'type': entity.get('type', 'UNKNOWN'),
+                'salience': entity.get('document_salience', entity.get('salience', 0)),
+                'query_relevance': entity.get('query_relevance', 0),
+                'combined_score': entity.get('combined_score', 0),
+                'node_type': 'missing'
+            })
+        
+        # Calculate edges (relationships) with similarity threshold
+        similarity_threshold = 0.3  # Only show meaningful relationships
+        
+        # Primary to missing entity relationships
+        for i, primary_entity in enumerate(primary_entities):
+            primary_idx = i
+            for j, missing_entity in enumerate(missing_entities):
+                missing_idx = len(primary_names) + j
+                similarity = similarity_matrix[primary_idx][missing_idx]
+                
+                if similarity > similarity_threshold:
+                    relationships['edges'].append({
+                        'source': f"primary_{i}",
+                        'target': f"missing_{j}",
+                        'weight': float(similarity),
+                        'type': 'primary_to_missing'
+                    })
+        
+        # Query to entity relationships
+        query_idx = len(all_entity_names) - 1
+        
+        # Query to primary entities
+        for i, primary_entity in enumerate(primary_entities):
+            similarity = similarity_matrix[i][query_idx]
+            if similarity > similarity_threshold:
+                relationships['edges'].append({
+                    'source': 'query',
+                    'target': f"primary_{i}",
+                    'weight': float(similarity),
+                    'type': 'query_to_primary'
+                })
+        
+        # Query to missing entities
+        for j, missing_entity in enumerate(missing_entities):
+            missing_idx = len(primary_names) + j
+            similarity = similarity_matrix[missing_idx][query_idx]
+            if similarity > similarity_threshold:
+                relationships['edges'].append({
+                    'source': 'query',
+                    'target': f"missing_{j}",
+                    'weight': float(similarity),
+                    'type': 'query_to_missing'
+                })
+        
+        return relationships
+        
+    except Exception as e:
+        st.error(f"Error calculating entity relationships: {e}")
+        return relationships
+
+def create_entity_relationship_graph(relationships, selected_missing_entity=None):
+    """Create an interactive entity relationship graph using Plotly."""
+    
+    if not relationships or (not relationships['primary_entities'] and not relationships['missing_entities']):
+        return None
+    
+    # Create NetworkX graph for layout calculation
+    G = nx.Graph()
+    
+    # Add nodes
+    all_entities = relationships['primary_entities'] + relationships['missing_entities']
+    
+    # Add query node
+    G.add_node('query', node_type='query')
+    
+    for entity in all_entities:
+        G.add_node(entity['id'], **entity)
+    
+    # Add edges
+    for edge in relationships['edges']:
+        G.add_edge(edge['source'], edge['target'], weight=edge['weight'])
+    
+    # Calculate layout
+    try:
+        pos = nx.spring_layout(G, k=3, iterations=50, seed=42)
+    except:
+        # Fallback to circular layout if spring layout fails
+        pos = nx.circular_layout(G)
+    
+    # Prepare data for Plotly
+    edge_x = []
+    edge_y = []
+    edge_info = []
+    
+    for edge in relationships['edges']:
+        source = edge['source']
+        target = edge['target']
+        
+        if source in pos and target in pos:
+            x0, y0 = pos[source]
+            x1, y1 = pos[target]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+            edge_info.append(f"{source} → {target}<br>Similarity: {edge['weight']:.3f}")
+    
+    # Create edge trace
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=1, color='rgba(125,125,125,0.5)'),
+        hoverinfo='none',
+        mode='lines',
+        showlegend=False
+    )
+    
+    # Prepare node data
+    node_x = []
+    node_y = []
+    node_text = []
+    node_colors = []
+    node_sizes = []
+    node_info = []
+    
+    # Add query node
+    if 'query' in pos:
+        qx, qy = pos['query']
+        node_x.append(qx)
+        node_y.append(qy)
+        node_text.append(f"🎯 {relationships['query_entity']}")
+        node_colors.append('gold')
+        node_sizes.append(25)
+        node_info.append(f"<b>Target Query</b><br>{relationships['query_entity']}")
+    
+    # Add entity nodes
+    for entity in all_entities:
+        if entity['id'] in pos:
+            x, y = pos[entity['id']]
+            node_x.append(x)
+            node_y.append(y)
+            
+            # Node styling based on type and selection
+            if entity['node_type'] == 'primary':
+                color = 'lightblue'
+                icon = '🔵'
+                size = 15 + (entity.get('combined_score', 0) * 10)
+            else:  # missing entity
+                if selected_missing_entity and entity['name'] == selected_missing_entity:
+                    color = 'red'  # Highlight selected missing entity
+                    icon = '🔴'
+                    size = 25
+                else:
+                    color = 'orange'
+                    icon = '🟠'
+                    size = 15 + (entity.get('combined_score', 0) * 10)
+            
+            # Truncate long names for display
+            display_name = entity['name']
+            if len(display_name) > 25:
+                display_name = display_name[:22] + "..."
+            
+            node_text.append(f"{icon} {display_name}")
+            node_colors.append(color)
+            node_sizes.append(size)
+            
+            # Hover info
+            node_info.append(
+                f"<b>{entity['name']}</b><br>"
+                f"Type: {entity['type']}<br>"
+                f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
+                f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
+                f"Status: {'In Your Content' if entity['node_type'] == 'primary' else 'Missing (Competitor)'}"
+            )
+    
+    # Create node trace
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        hoverinfo='text',
+        hovertext=node_info,
+        text=node_text,
+        textposition="middle center",
+        marker=dict(
+            size=node_sizes,
+            color=node_colors,
+            line=dict(width=2, color='white')
+        ),
+        textfont=dict(size=10),
+        showlegend=False
+    )
+    
+    # Create figure
+    fig = go.Figure(data=[edge_trace, node_trace],
+                   layout=go.Layout(
+                        title=dict(
+                            text=f"Entity Relationship Graph for Primary URL",
+                            x=0.5,
+                            font=dict(size=16)
+                        ),
+                        titlefont_size=16,
+                        showlegend=False,
+                        hovermode='closest',
+                        margin=dict(b=20,l=5,r=5,t=40),
+                        annotations=[ dict(
+                            text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity",
+                            showarrow=False,
+                            xref="paper", yref="paper",
+                            x=0.005, y=-0.002,
+                            xanchor='left', yanchor='bottom',
+                            font=dict(size=10)
+                        )],
+                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        plot_bgcolor='white'
+                        ))
+    
+    return fig
 
 @st.cache_resource
 def load_embedding_model():
@@ -523,23 +686,11 @@ if st.session_state.processing:
         with st.spinner("Extracting entities from all URLs..."):
             for url, content in url_content.items():
                 st.write(f"Extracting entities from: {url}")
-                raw_entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
+                entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
                 
-                if raw_entities:
-                    # Filter entities to only include those with Wikipedia entries
-                    st.write(f"Found {len(raw_entities)} raw entities. Checking Wikipedia...")
-                    filtered_entities, wikipedia_mapping = filter_entities_with_wikipedia(raw_entities, st.session_state.gcp_credentials_info)
-                    
-                    if filtered_entities:
-                        url_entities[url] = filtered_entities
-                        # Store Wikipedia mapping for later use
-                        if 'wikipedia_mappings' not in st.session_state:
-                            st.session_state.wikipedia_mappings = {}
-                        st.session_state.wikipedia_mappings[url] = wikipedia_mapping
-                        
-                        st.success(f"✅ Kept {len(filtered_entities)} entities with Wikipedia entries")
-                    else:
-                        st.warning(f"⚠️ No entities with Wikipedia entries found for {url}")
+                if entities:
+                    url_entities[url] = entities
+                    st.success(f"✅ Found {len(entities)} entities")
                 else:
                     st.warning(f"⚠️ No entities extracted from {url}")
         
@@ -763,16 +914,17 @@ if st.session_state.entity_analysis_results:
                                 st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
                                 st.markdown(f"- **Competitors:** {entity_info['URLs']}")
                                 
-                                # Add Wikipedia link
-                                wikipedia_info = st.session_state.get('wikipedia_mappings', {})
-                                for url, mapping in wikipedia_info.items():
-                                    if url != primary_url:
-                                        entity_key = entity_name.lower()
-                                        if entity_key in mapping:
-                                            wiki_url = mapping[entity_key]['url']
-                                            wiki_title = mapping[entity_key]['title']
-                                            st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
-                                            break
+                                # Add Wikipedia link if filtering was enabled
+                                if st.session_state.get('enable_wikipedia_filtering', False):
+                                    wikipedia_info = st.session_state.get('wikipedia_mappings', {})
+                                    for url, mapping in wikipedia_info.items():
+                                        if url != primary_url:
+                                            entity_key = entity_name.lower()
+                                            if entity_key in mapping:
+                                                wiki_url = mapping[entity_key]['url']
+                                                wiki_title = mapping[entity_key]['title']
+                                                st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
+                                                break
                             
                             with col_b:
                                 if best_passage_info["similarity"] > 0.1:
@@ -838,16 +990,17 @@ if st.session_state.entity_analysis_results:
                         st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
                         st.markdown(f"- **Competitors:** {entity_info['URLs']}")
                         
-                        # Add Wikipedia link if available
-                        wikipedia_info = st.session_state.get('wikipedia_mappings', {})
-                        for url, mapping in wikipedia_info.items():
-                            if url != primary_url:  # Check competitor URLs
-                                entity_key = entity_name.lower()
-                                if entity_key in mapping:
-                                    wiki_url = mapping[entity_key]['url']
-                                    wiki_title = mapping[entity_key]['title']
-                                    st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
-                                    break
+                        # Add Wikipedia link if available and filtering was enabled
+                        if st.session_state.get('enable_wikipedia_filtering', False):
+                            wikipedia_info = st.session_state.get('wikipedia_mappings', {})
+                            for url, mapping in wikipedia_info.items():
+                                if url != primary_url:  # Check competitor URLs
+                                    entity_key = entity_name.lower()
+                                    if entity_key in mapping:
+                                        wiki_url = mapping[entity_key]['url']
+                                        wiki_title = mapping[entity_key]['title']
+                                        st.markdown(f"- **Wikipedia:** [📖 {wiki_title}]({wiki_url})")
+                                        break
                     
                     with col_b:
                         if best_passage_info["similarity"] > 0.1:
