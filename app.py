@@ -361,17 +361,49 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
     
     for element in soup.find_all(target_tags):
         element_text = clean_text_for_display(element.get_text(separator=' '))
-        passage_score = 0.5
+        passage_score = 0.5  # Default score
         
         if not element_text: 
             continue
-            
-        for unit_text, score in unit_scores_map.items():
-            if element_text in unit_text: 
-                passage_score = score
-                break
         
-        color = "green" if passage_score >= 0.80 else "red" if passage_score < 0.60 else "inherit"
+        # Try multiple matching strategies to find the best score
+        best_score = 0.5
+        
+        # Strategy 1: Exact match
+        if element_text in unit_scores_map:
+            best_score = unit_scores_map[element_text]
+        else:
+            # Strategy 2: Check if element is contained in any passage
+            for unit_text, score in unit_scores_map.items():
+                if element_text in unit_text:
+                    best_score = max(best_score, score)
+            
+            # Strategy 3: Check if any passage is contained in element (for very long elements)
+            if best_score == 0.5:
+                for unit_text, score in unit_scores_map.items():
+                    if unit_text in element_text:
+                        best_score = max(best_score, score)
+            
+            # Strategy 4: Fuzzy matching for partial overlaps
+            if best_score == 0.5:
+                element_words = set(element_text.lower().split())
+                if len(element_words) > 3:  # Only for substantial text
+                    for unit_text, score in unit_scores_map.items():
+                        unit_words = set(unit_text.lower().split())
+                        if len(unit_words) > 3:
+                            # Calculate word overlap percentage
+                            overlap = len(element_words.intersection(unit_words))
+                            overlap_ratio = overlap / min(len(element_words), len(unit_words))
+                            
+                            # If substantial overlap (>60%), use a weighted score
+                            if overlap_ratio > 0.6:
+                                weighted_score = score * overlap_ratio
+                                best_score = max(best_score, weighted_score)
+        
+        passage_score = best_score
+        
+        # Color coding based on score
+        color = "green" if passage_score >= 0.70 else "red" if passage_score < 0.50 else "inherit"
         style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 1em; margin-top: 1em;"
         
         if element.name in ['ul', 'ol']:
