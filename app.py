@@ -371,7 +371,7 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
                 passage_score = score
                 break
         
-        color = "green" if passage_score >= 0.70 else "red" if passage_score < 0.50 else "inherit"
+        color = "green" if passage_score >= 0.80 else "red" if passage_score < 0.60 else "inherit"
         style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 1em; margin-top: 1em;"
         
         if element.name in ['ul', 'ol']:
