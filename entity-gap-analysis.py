@@ -783,6 +783,8 @@ if st.session_state.entity_analysis_results:
 # Footer
 st.sidebar.divider()
 st.sidebar.info("🎯 Entity Gap Analysis Tool v1.0")
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Created by [The SEO Consultant.ai](https://theseoconsultant.ai/)**")
 
 # Help section
 with st.sidebar.expander("❓ How it works", expanded=False):
