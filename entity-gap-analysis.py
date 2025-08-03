@@ -4,7 +4,6 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import time
 import random
@@ -16,6 +15,8 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 from selenium_stealth import stealth
+from sklearn.cluster import KMeans
+from collections import Counter
 import networkx as nx
 
 # Google Cloud NLP libraries
@@ -34,7 +35,7 @@ if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_conf
 if "entity_analysis_results" not in st.session_state: st.session_state.entity_analysis_results = None
 if "content_passages" not in st.session_state: st.session_state.content_passages = None
 if "embedding_model" not in st.session_state: st.session_state.embedding_model = None
-if "entity_relationships" not in st.session_state: st.session_state.entity_relationships = None
+if "content_relationships" not in st.session_state: st.session_state.content_relationships = None
 if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_configured = False
 if "gemini_api_key_to_persist" not in st.session_state: st.session_state.gemini_api_key_to_persist = ""
 
@@ -62,15 +63,8 @@ def enforce_rate_limit():
 
 # --- Sidebar API Configuration ---
 st.sidebar.header("🔑 API Configuration")
-
 with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.gcp_nlp_configured):
-    uploaded_gcp_key = st.file_uploader(
-        "Upload Google Cloud Service Account JSON",
-        type="json",
-        help="Upload the JSON key file for a service account with 'Cloud Natural Language API User' role.",
-        disabled=st.session_state.processing,
-        key="gcp_key_uploader"
-    )
+    uploaded_gcp_key = st.file_uploader("Upload Google Cloud Service Account JSON", type="json", help="Upload the JSON key file for a service account with 'Cloud Natural Language API User' role.", disabled=st.session_state.processing, key="gcp_key_uploader")
     if uploaded_gcp_key is not None:
         try:
             credentials_info = json.load(uploaded_gcp_key)
@@ -78,1102 +72,275 @@ with st.sidebar.expander("Google Cloud NLP API", expanded=not st.session_state.g
                 st.session_state.gcp_credentials_info = credentials_info
                 st.session_state.gcp_nlp_configured = True
                 st.success(f"GCP Key for project '{credentials_info['project_id']}' loaded!")
-            else:
-                st.error("Invalid JSON key file format.")
-                st.session_state.gcp_nlp_configured = False
-                st.session_state.gcp_credentials_info = None
-        except Exception as e:
-            st.error(f"Failed to process GCP key file: {e}")
-            st.session_state.gcp_nlp_configured = False
-            st.session_state.gcp_credentials_info = None
-
+            else: st.error("Invalid JSON key file format."); st.session_state.gcp_nlp_configured = False; st.session_state.gcp_credentials_info = None
+        except Exception as e: st.error(f"Failed to process GCP key file: {e}"); st.session_state.gcp_nlp_configured = False; st.session_state.gcp_credentials_info = None
 with st.sidebar.expander("Zyte API (Optional)", expanded=False):
-    zyte_api_key_input = st.text_input(
-        "Enter Zyte API Key:",
-        type="password",
-        value=st.session_state.get("zyte_api_key_to_persist", ""),
-        disabled=st.session_state.processing,
-        key="zyte_api_key_input"
-    )
+    zyte_api_key_input = st.text_input("Enter Zyte API Key:", type="password", value=st.session_state.get("zyte_api_key_to_persist", ""), disabled=st.session_state.processing, key="zyte_api_key_input")
     if st.button("Set & Verify Zyte Key", disabled=st.session_state.processing, key="zyte_verify_btn"):
         if zyte_api_key_input:
             try:
-                response = requests.post(
-                    "https://api.zyte.com/v1/extract",
-                    auth=(zyte_api_key_input, ''),
-                    json={'url': 'https://toscrape.com/', 'httpResponseBody': True},
-                    timeout=20
-                )
-                if response.status_code == 200:
-                    st.session_state.zyte_api_key_to_persist = zyte_api_key_input
-                    st.session_state.zyte_api_configured = True
-                    st.success("Zyte API Key Configured!")
-                    st.rerun()
-                else:
-                    st.session_state.zyte_api_configured = False
-                    st.error(f"Zyte Key Failed. Status: {response.status_code}")
-            except Exception as e:
-                st.session_state.zyte_api_configured = False
-                st.error(f"Zyte API Request Failed: {str(e)[:200]}")
-        else:
-            st.warning("Please enter Zyte API Key.")
-
+                response = requests.post("https://api.zyte.com/v1/extract", auth=(zyte_api_key_input, ''), json={'url': 'https://toscrape.com/', 'httpResponseBody': True}, timeout=20)
+                if response.status_code == 200: st.session_state.zyte_api_key_to_persist = zyte_api_key_input; st.session_state.zyte_api_configured = True; st.success("Zyte API Key Configured!"); st.rerun()
+                else: st.session_state.zyte_api_configured = False; st.error(f"Zyte Key Failed. Status: {response.status_code}")
+            except Exception as e: st.session_state.zyte_api_configured = False; st.error(f"Zyte API Request Failed: {str(e)[:200]}")
+        else: st.warning("Please enter Zyte API Key.")
 with st.sidebar.expander("Gemini API (Optional)", expanded=False):
-    gemini_api_key_input = st.text_input(
-        "Enter Gemini API Key:",
-        type="password",
-        value=st.session_state.get("gemini_api_key_to_persist", ""),
-        disabled=st.session_state.processing,
-        help="Required for AI-powered implementation strategies and content analysis",
-        key="gemini_api_key_input"
-    )
-
+    gemini_api_key_input = st.text_input("Enter Gemini API Key:", type="password", value=st.session_state.get("gemini_api_key_to_persist", ""), disabled=st.session_state.processing, help="Required for AI-powered implementation strategies and content analysis", key="gemini_api_key_input")
     if st.button("Set & Verify Gemini Key", disabled=st.session_state.processing, key="gemini_verify_btn"):
         if gemini_api_key_input:
             try:
-                # Test the Gemini API key
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_api_key_input)
-                model = genai.GenerativeModel("gemini-1.5-flash") # Using 1.5-flash for speed
-
-                # Simple test to verify the API key works
-                test_response = model.generate_content("Hello, respond with 'API key works'")
-
-                if test_response and test_response.text:
-                    st.session_state.gemini_api_key_to_persist = gemini_api_key_input
-                    st.session_state.gemini_api_configured = True
-                    st.success("Gemini API Key Configured!")
-                    st.rerun()
-                else:
-                    st.session_state.gemini_api_configured = False
-                    st.error("Gemini API Key verification failed - no response received")
-
-            except Exception as e:
-                st.session_state.gemini_api_configured = False
-                st.error(f"Gemini API Key verification failed: {str(e)}")
-        else:
-            st.warning("Please enter a Gemini API Key.")
-
-    # Clear key button
+                import google.generativeai as genai; genai.configure(api_key=gemini_api_key_input); model = genai.GenerativeModel("gemini-1.5-flash"); test_response = model.generate_content("Hello, respond with 'API key works'")
+                if test_response and test_response.text: st.session_state.gemini_api_key_to_persist = gemini_api_key_input; st.session_state.gemini_api_configured = True; st.success("Gemini API Key Configured!"); st.rerun()
+                else: st.session_state.gemini_api_configured = False; st.error("Gemini API Key verification failed - no response received")
+            except Exception as e: st.session_state.gemini_api_configured = False; st.error(f"Gemini API Key verification failed: {str(e)}")
+        else: st.warning("Please enter a Gemini API Key.")
     if st.session_state.get('gemini_api_configured', False):
-        if st.button("🗑️ Clear Gemini Key", disabled=st.session_state.processing, key="gemini_clear_btn"):
-            st.session_state.gemini_api_key_to_persist = ""
-            st.session_state.gemini_api_configured = False
-            st.success("Gemini API key cleared!")
-            st.rerun()
-
-st.sidebar.markdown("---")
-if st.session_state.get("gcp_nlp_configured"):
-    st.sidebar.markdown("✅ Google NLP API: **Required - Configured**")
-else:
-    st.sidebar.markdown("⚠️ Google NLP API: **Required - Not Configured**")
-
-st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**")
-st.sidebar.markdown(f"🤖 Gemini API: **{'Configured' if st.session_state.get('gemini_api_configured', False) else 'Optional - Not Configured'}**")
+        if st.button("🗑️ Clear Gemini Key", disabled=st.session_state.processing, key="gemini_clear_btn"): st.session_state.gemini_api_key_to_persist = ""; st.session_state.gemini_api_configured = False; st.success("Gemini API key cleared!"); st.rerun()
+st.sidebar.markdown("---"); st.sidebar.markdown(f"✅ Google NLP API: **{'Required - Configured' if st.session_state.gcp_nlp_configured else 'Required - Not Configured'}**"); st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**"); st.sidebar.markdown(f"🤖 Gemini API: **{'Configured' if st.session_state.get('gemini_api_configured', False) else 'Optional - Not Configured'}**")
 
 # --- Core Functions ---
 def is_number_entity(entity_name):
-    """Check if an entity is primarily numeric and should be filtered out."""
-    if not entity_name:
-        return True
-
-    # Remove common separators and whitespace
+    if not entity_name: return True
     cleaned = re.sub(r'[,\s\-\.]', '', entity_name)
-
-    # Check if it's purely numeric
-    if cleaned.isdigit():
-        return True
-
-    # Check if it's a percentage
-    if entity_name.strip().endswith('%') and re.sub(r'[%,\s\-\.]', '', entity_name).isdigit():
-        return True
-
-    # Check if it's a year (4 digits)
-    if re.match(r'^\d{4}$', cleaned):
-        return True
-
-    # Check if it's mostly numeric (>70% digits)
+    if cleaned.isdigit(): return True
+    if entity_name.strip().endswith('%') and re.sub(r'[%,\s\-\.]', '', entity_name).isdigit(): return True
+    if re.match(r'^\d{4}$', cleaned): return True
     digit_count = sum(1 for char in entity_name if char.isdigit())
     total_chars = len(re.sub(r'\s', '', entity_name))
-
-    if total_chars > 0 and (digit_count / total_chars) > 0.7:
-        return True
-
-    # Filter out very short numeric-heavy entities
-    if len(entity_name.strip()) <= 4 and any(char.isdigit() for char in entity_name):
-        return True
-
+    if total_chars > 0 and (digit_count / total_chars) > 0.7: return True
+    if len(entity_name.strip()) <= 4 and any(char.isdigit() for char in entity_name): return True
     return False
 
 @st.cache_data(show_spinner="Extracting entities...")
 def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
-    """Extracts entities from text using Google Cloud Natural Language API."""
-    if not _credentials_info or not text:
-        return {}
-
+    if not _credentials_info or not text: return {}
     try:
-        credentials = service_account.Credentials.from_service_account_info(_credentials_info)
-        client = language_v1.LanguageServiceClient(credentials=credentials)
-
-        max_bytes = 900000
-        text_bytes = text.encode('utf-8')
-        if len(text_bytes) > max_bytes:
-            text = text_bytes[:max_bytes].decode('utf-8', 'ignore')
-            st.warning("Text was truncated to fit Google NLP API size limit.")
-
-        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
-        response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
-
+        credentials = service_account.Credentials.from_service_account_info(_credentials_info); client = language_v1.LanguageServiceClient(credentials=credentials)
+        max_bytes = 900000; text_bytes = text.encode('utf-8')
+        if len(text_bytes) > max_bytes: text = text_bytes[:max_bytes].decode('utf-8', 'ignore'); st.warning("Text was truncated to fit Google NLP API size limit.")
+        document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT); response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
         entities_dict = {}
         for entity in response.entities:
             entity_name = entity.name.strip()
-
-            # Filter out number entities
-            if is_number_entity(entity_name):
-                continue
-
+            if is_number_entity(entity_name): continue
             key = entity_name.lower()
-            if key not in entities_dict or entity.salience > entities_dict[key]['salience']:
-                entities_dict[key] = {
-                    'name': entity_name,
-                    'type': language_v1.Entity.Type(entity.type_).name,
-                    'salience': entity.salience,
-                    'mentions': len(entity.mentions)
-                }
+            if key not in entities_dict or entity.salience > entities_dict[key]['salience']: entities_dict[key] = {'name': entity_name, 'type': language_v1.Entity.Type(entity.type_).name, 'salience': entity.salience, 'mentions': len(entity.mentions)}
         return entities_dict
-
-    except Exception as e:
-        st.error(f"Google Cloud NLP API Error: {e}")
-        return {}
+    except Exception as e: st.error(f"Google Cloud NLP API Error: {e}"); return {}
 
 @st.cache_resource
 def load_embedding_model():
-    """Load a lightweight embedding model for query similarity."""
-    try:
-        return SentenceTransformer('all-MiniLM-L6-v2')
-    except Exception as e:
-        st.error(f"Failed to load embedding model: {e}")
-        return None
+    try: return SentenceTransformer('all-MiniLM-L6-v2')
+    except Exception as e: st.error(f"Failed to load embedding model: {e}"); return None
 
 def calculate_entity_query_relevance(entity_name, query_text, model):
-    """Calculate similarity between entity and target query."""
-    if not model or not entity_name or not query_text:
-        return 0.0
+    if not model or not entity_name or not query_text: return 0.0
+    try: entity_embedding = model.encode([entity_name]); query_embedding = model.encode([query_text]); similarity = cosine_similarity(entity_embedding, query_embedding)[0][0]; return float(similarity)
+    except Exception as e: st.warning(f"Failed to calculate similarity for '{entity_name}': {e}"); return 0.0
 
+@st.cache_data(show_spinner="Analyzing content structure...")
+def cluster_content_passages(_passages, _model, num_clusters=5):
+    if not _passages or not _model or len(_passages) < num_clusters: return []
     try:
-        entity_embedding = model.encode([entity_name])
-        query_embedding = model.encode([query_text])
-        similarity = cosine_similarity(entity_embedding, query_embedding)[0][0]
-        return float(similarity)
-    except Exception as e:
-        st.warning(f"Failed to calculate similarity for '{entity_name}': {e}")
-        return 0.0
+        passage_embeddings = _model.encode(_passages); actual_num_clusters = min(num_clusters, len(_passages))
+        kmeans = KMeans(n_clusters=actual_num_clusters, random_state=0, n_init='auto').fit(passage_embeddings)
+        clusters = []
+        for i in range(actual_num_clusters):
+            cluster_indices = np.where(kmeans.labels_ == i)[0]
+            if len(cluster_indices) == 0: continue
+            cluster_passages_text = " ".join([_passages[j] for j in cluster_indices]); words = re.findall(r'\b\w{4,15}\b', cluster_passages_text.lower())
+            stop_words = set(['this', 'that', 'with', 'your', 'from', 'what', 'which', 'will', 'also', 'just', 'they', 'have', 'been', 'about', 'more', 'like', 'content', 'using', 'server', 'client'])
+            words = [word for word in words if word not in stop_words]; most_common = [word for word, count in Counter(words).most_common(3)]; cluster_name = " ".join(most_common).title() if most_common else f"Topic {i+1}"
+            clusters.append({"id": f"cluster_{i}", "name": f"Section: {cluster_name}", "centroid": kmeans.cluster_centers_[i], "passage_indices": cluster_indices})
+        return clusters
+    except Exception as e: st.error(f"Failed to cluster content: {e}"); return []
 
-def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query, similarity_threshold=0.4):
-    """Calculate relationships between the given lists of primary and missing entities."""
-    if not embedding_model:
-        return {}
+@st.cache_data(show_spinner="Mapping entities to content structure...")
+def calculate_content_relationships(_primary_entities, _missing_entities, _clusters, _model):
+    if not _model or not _clusters: return {}
+    primary_entity_list = [e for e in _primary_entities if isinstance(e, dict) and 'Entity' in e]; missing_entity_list = [e for e in _missing_entities if isinstance(e, dict) and 'Entity' in e]
+    all_entities = primary_entity_list + missing_entity_list
+    if not all_entities: return {}
+    entity_names = [e['Entity'] for e in all_entities]; entity_embeddings = _model.encode(entity_names); cluster_centroids = np.array([c['centroid'] for c in _clusters])
+    similarity_matrix = cosine_similarity(entity_embeddings, cluster_centroids)
+    nodes, edges = [], []
+    for cluster in _clusters: nodes.append({"id": cluster['id'], "label": cluster['name'], "type": "cluster"})
+    for i, entity in enumerate(all_entities):
+        entity_id = f"entity_{i}_{entity['Entity'].replace(' ', '_')}"; entity_type = "primary" if entity in primary_entity_list else "missing"
+        best_cluster_index = np.argmax(similarity_matrix[i]); best_cluster_id = _clusters[best_cluster_index]['id']
+        nodes.append({"id": entity_id, "label": entity['Entity'], "type": entity_type, "score": entity.get('Combined Score', 0)}); edges.append({"source": entity_id, "target": best_cluster_id})
+    return {"nodes": nodes, "edges": edges}
 
-    # The entities passed to this function are already filtered by the UI.
-    # We use them directly.
-    top_primary = primary_entities
-    top_missing = missing_entities
-
-    relationships = {
-        'primary_entities': [],
-        'missing_entities': [],
-        'edges': [],
-        'query_entity': target_query
-    }
-
-    try:
-        # Prepare entity lists
-        primary_names = [entity['Entity'] for entity in top_primary]
-        missing_names = [entity['Entity'] for entity in top_missing]
-        all_entity_names = primary_names + missing_names + [target_query]
-
-        # Calculate embeddings for all entities
-        if not all_entity_names:
-            return relationships
-
-        entity_embeddings = embedding_model.encode(all_entity_names)
-
-        # Calculate similarity matrix
-        similarity_matrix = cosine_similarity(entity_embeddings)
-
-        # Add primary entities to graph
-        for i, entity in enumerate(top_primary):
-            relationships['primary_entities'].append({
-                'id': f"primary_{i}",
-                'name': entity['Entity'],
-                'type': entity.get('Type', 'UNKNOWN'),
-                'salience': entity.get('Document Salience', 0),
-                'query_relevance': entity.get('Query Relevance', 0),
-                'combined_score': entity.get('Combined Score', 0),
-                'node_type': 'primary'
-            })
-
-        # Add missing entities to graph
-        for i, entity in enumerate(top_missing):
-            relationships['missing_entities'].append({
-                'id': f"missing_{i}",
-                'name': entity['Entity'],
-                'type': entity.get('Type', 'UNKNOWN'),
-                'salience': entity.get('Document Salience', 0),
-                'query_relevance': entity.get('Query Relevance', 0),
-                'combined_score': entity.get('Combined Score', 0),
-                'node_type': 'missing'
-            })
-
-        # Calculate edges with custom similarity threshold
-        # Primary to missing entity relationships
-        for i, primary_entity in enumerate(top_primary):
-            primary_idx = i
-            for j, missing_entity in enumerate(top_missing):
-                missing_idx = len(primary_names) + j
-                similarity = similarity_matrix[primary_idx][missing_idx]
-
-                if similarity > similarity_threshold:
-                    relationships['edges'].append({
-                        'source': f"primary_{i}",
-                        'target': f"missing_{j}",
-                        'weight': float(similarity),
-                        'type': 'primary_to_missing'
-                    })
-
-        # Query to entity relationships with slightly lower threshold
-        query_idx = len(all_entity_names) - 1
-        query_threshold = max(0.3, similarity_threshold - 0.1)  # Slightly lower for query connections
-
-        # Query to primary entities
-        for i, primary_entity in enumerate(top_primary):
-            similarity = similarity_matrix[i][query_idx]
-            if similarity > query_threshold:
-                relationships['edges'].append({
-                    'source': 'query',
-                    'target': f"primary_{i}",
-                    'weight': float(similarity),
-                    'type': 'query_to_primary'
-                })
-
-        # Query to missing entities
-        for j, missing_entity in enumerate(top_missing):
-            missing_idx = len(primary_names) + j
-            similarity = similarity_matrix[missing_idx][query_idx]
-            if similarity > query_threshold:
-                relationships['edges'].append({
-                    'source': 'query',
-                    'target': f"missing_{j}",
-                    'weight': float(similarity),
-                    'type': 'query_to_missing'
-                })
-
-        return relationships
-
-    except Exception as e:
-        st.error(f"Error calculating entity relationships: {e}")
-        return relationships
-
-def create_entity_relationship_graph(relationships, selected_missing_entity=None):
-    """Create an improved entity relationship graph with a clear hierarchical layout."""
-    if not relationships or (not relationships['primary_entities'] and not relationships['missing_entities']):
-        st.info("Not enough data to generate a relationship graph.")
-        return None
-
-    primary_entities = relationships['primary_entities']
-    missing_entities = relationships['missing_entities']
-    edges = relationships['edges']
-    query_entity = relationships['query_entity']
-
-    # --- 1. Create Hierarchical Layout Positions ---
-    pos = {}
-    # Top row for Missing Entities
-    missing_count = len(missing_entities)
-    if missing_count > 0:
-        for i, entity in enumerate(missing_entities):
-            x = (i - (missing_count - 1) / 2) * 1.5
-            y = 2.0
-            pos[entity['id']] = (x, y)
-
-    # Center for the Query
-    pos['query'] = (0, 0)
-
-    # Bottom row for Primary Entities
-    primary_count = len(primary_entities)
-    if primary_count > 0:
-        for i, entity in enumerate(primary_entities):
-            x = (i - (primary_count - 1) / 2) * 1.2
-            y = -2.0
-            pos[entity['id']] = (x, y)
-
-    # --- 2. Create Edge Traces with Different Styles ---
-    edge_traces = []
-
-    # Type 1: Query to Missing (High-Priority Gaps) - Red Dashed
-    q_to_m_x, q_to_m_y = [], []
-    for edge in [e for e in edges if e['type'] == 'query_to_missing']:
-        source_pos, target_pos = pos.get(edge['source']), pos.get(edge['target'])
-        if source_pos and target_pos:
-            q_to_m_x.extend([source_pos[0], target_pos[0], None])
-            q_to_m_y.extend([source_pos[1], target_pos[1], None])
-    if q_to_m_x:
-        edge_traces.append(go.Scatter(x=q_to_m_x, y=q_to_m_y, line=dict(width=2, color='red', dash='dash'), hoverinfo='none', mode='lines', name='Query → Missing (Gap)'))
-
-    # Type 2: Query to Primary (Current Coverage) - Blue Solid
-    q_to_p_x, q_to_p_y = [], []
-    for edge in [e for e in edges if e['type'] == 'query_to_primary']:
-        source_pos, target_pos = pos.get(edge['source']), pos.get(edge['target'])
-        if source_pos and target_pos:
-            q_to_p_x.extend([source_pos[0], target_pos[0], None])
-            q_to_p_y.extend([source_pos[1], target_pos[1], None])
-    if q_to_p_x:
-        edge_traces.append(go.Scatter(x=q_to_p_x, y=q_to_p_y, line=dict(width=1.5, color='blue'), hoverinfo='none', mode='lines', name='Query → Your Content'))
-
-    # Type 3: Primary to Missing (Bridge Opportunity) - Orange Dotted
-    p_to_m_x, p_to_m_y = [], []
-    for edge in [e for e in edges if e['type'] == 'primary_to_missing']:
-        source_pos, target_pos = pos.get(edge['source']), pos.get(edge['target'])
-        if source_pos and target_pos:
-            p_to_m_x.extend([source_pos[0], target_pos[0], None])
-            p_to_m_y.extend([source_pos[1], target_pos[1], None])
-    if p_to_m_x:
-        edge_traces.append(go.Scatter(x=p_to_m_x, y=p_to_m_y, line=dict(width=1, color='orange', dash='dot'), hoverinfo='none', mode='lines', name='Your Content ↔ Missing'))
-
-    # --- 3. Create Node Traces with Rich Hover Info ---
-    node_traces = []
-
-    # Helper to build connection text for hover info
-    def get_connection_text(entity_id, all_nodes, all_edges, query_name):
-        connections = []
-        for edge in all_edges:
-            if entity_id == edge['source']:
-                if edge['target'] == 'query':
-                    connections.append(f"→ Query ({edge['weight']:.2f})")
-                else:
-                    target_node = next((n for n in all_nodes if n['id'] == edge['target']), None)
-                    if target_node: connections.append(f"→ {target_node['name']} ({edge['weight']:.2f})")
-            elif entity_id == edge['target']:
-                if edge['source'] == 'query':
-                    connections.append(f"← Query ({edge['weight']:.2f})")
-                else:
-                    source_node = next((n for n in all_nodes if n['id'] == edge['source']), None)
-                    if source_node: connections.append(f"← {source_node['name']} ({edge['weight']:.2f})")
-        return "<br>".join(connections) if connections else "No direct connections"
-
-    # Query Node
-    query_connections = get_connection_text('query', primary_entities + missing_entities, edges, query_entity)
-    query_hover = f"<b>🎯 Target Query: {query_entity}</b><br><br><b>Connections:</b><br>{query_connections}<extra></extra>"
-    node_traces.append(go.Scatter(x=[0], y=[0], text=['🎯'], mode='markers+text', marker=dict(size=40, color='gold', line=dict(width=3, color='darkgoldenrod')), textposition='middle center', textfont=dict(size=20), hovertemplate=query_hover, name='Target Query'))
-
-    # Missing Entity Nodes
-    if missing_entities:
-        m_x = [pos[e['id']][0] for e in missing_entities]
-        m_y = [pos[e['id']][1] for e in missing_entities]
-        m_sizes = [15 + (e.get('combined_score', 0) * 25) for e in missing_entities]
-        m_colors = ['red' if e['name'] == selected_missing_entity else 'orange' for e in missing_entities]
-        m_hover = [f"<b>⚠️ Missing: {e['name']}</b><br>Type: {e['type']}<br>Combined Score: {e['combined_score']:.3f}<br>Query Relevance: {e['query_relevance']:.3f}<br><br><b>Connections:</b><br>{get_connection_text(e['id'], primary_entities, edges, query_entity)}<extra></extra>" for e in missing_entities]
-        node_traces.append(go.Scatter(x=m_x, y=m_y, mode='markers', marker=dict(size=m_sizes, color=m_colors, line=dict(width=2, color='white')), hovertemplate=m_hover, customdata=m_hover, name='Missing Entities'))
-
-    # Primary Entity Nodes
-    if primary_entities:
-        p_x = [pos[e['id']][0] for e in primary_entities]
-        p_y = [pos[e['id']][1] for e in primary_entities]
-        p_sizes = [15 + (e.get('combined_score', 0) * 25) for e in primary_entities]
-        p_hover = [f"<b>✅ In Your Content: {e['name']}</b><br>Type: {e['type']}<br>Combined Score: {e['combined_score']:.3f}<br>Query Relevance: {e['query_relevance']:.3f}<br><br><b>Connections:</b><br>{get_connection_text(e['id'], missing_entities, edges, query_entity)}<extra></extra>" for e in primary_entities]
-        node_traces.append(go.Scatter(x=p_x, y=p_y, mode='markers', marker=dict(size=p_sizes, color='lightblue', line=dict(width=2, color='blue')), hovertemplate=p_hover, customdata=p_hover, name='Your Content Entities'))
-
-    # --- 4. Create Annotations for Labels ---
-    annotations = []
-    # Section Titles
-    if missing_entities: annotations.append(dict(x=0, y=2.7, text="<b>Missing Entities (Content Gaps)</b>", showarrow=False, font=dict(size=16, color='red'), xanchor='center'))
-    if primary_entities: annotations.append(dict(x=0, y=-2.7, text="<b>Your Content's Entities</b>", showarrow=False, font=dict(size=16, color='blue'), xanchor='center'))
-    # Entity Name Labels
-    for entity_list, y_offset, color in [(missing_entities, 0.4, 'red'), (primary_entities, -0.4, 'blue')]:
-        for entity in entity_list:
-            if entity['id'] in pos:
-                x, y = pos[entity['id']]
-                display_name = entity['name'] if len(entity['name']) < 20 else entity['name'][:17] + '...'
-                annotations.append(dict(x=x, y=y + y_offset, text=display_name, showarrow=False, font=dict(size=10, color=color), xanchor='center'))
-
-    # --- 5. Assemble the Figure ---
-    fig = go.Figure(
-        data=edge_traces + node_traces,
-        layout=go.Layout(
-            title=f"Entity Relationship Map for '{query_entity}'",
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            hovermode='closest',
-            margin=dict(b=40, l=40, r=40, t=100),
-            annotations=annotations,
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            plot_bgcolor='white',
-            height=700
-        )
-    )
+def create_content_structure_graph(relationships, highlighted_entity=None):
+    if not relationships or not relationships.get('nodes'): return None
+    nodes, edges = relationships['nodes'], relationships['edges']
+    G = nx.Graph(); [G.add_node(node['id']) for node in nodes]; [G.add_edge(edge['source'], edge['target']) for edge in edges]
+    clusters = [n for n in nodes if n['type'] == 'cluster']; center_nodes_ids = [c['id'] for c in clusters]
+    pos_center = nx.circular_layout(G.subgraph(center_nodes_ids)); pos = nx.spring_layout(G, pos=pos_center, fixed=center_nodes_ids, iterations=200, k=1.8/np.sqrt(len(G.nodes())))
+    node_x, node_y, node_text, node_color, node_size, node_hover, node_line_color, node_line_width = [], [], [], [], [], [], [], []
+    for node in nodes:
+        x, y = pos[node['id']]; node_x.append(x); node_y.append(y); node_text.append(node['label'])
+        is_highlighted = highlighted_entity and node['label'] == highlighted_entity
+        if node['type'] == 'cluster':
+            node_color.append('rgba(220, 220, 220, 0.8)'); node_size.append(50); node_hover.append(f"<b>{node['label']}</b><br>A main theme of your content."); node_line_color.append('black'); node_line_width.append(1)
+        elif node['type'] == 'primary':
+            node_color.append('rgba(28, 117, 215, 0.9)'); node_size.append(15 + node.get('score', 0) * 20); node_hover.append(f"<b>{node['label']}</b><br>Type: In your content"); node_line_color.append('blue'); node_line_width.append(1)
+        elif node['type'] == 'missing':
+            node_color.append('rgba(255, 100, 100, 0.9)'); node_size.append(20 + node.get('score', 0) * 25); node_hover.append(f"<b>GAP: {node['label']}</b><br>Type: Missing from this section"); node_line_color.append('red' if is_highlighted else 'darkred'); node_line_width.append(3 if is_highlighted else 1)
+    
+    node_trace = go.Scatter(x=node_x, y=node_y, mode='markers', marker=dict(color=node_color, size=node_size, line=dict(width=node_line_width, color=node_line_color)), hoverinfo='text', hovertext=node_hover)
+    edge_x, edge_y = [], []; [edge_x.extend([pos[edge['source']][0], pos[edge['target']][0], None]) or edge_y.extend([pos[edge['source']][1], pos[edge['target']][1], None]) for edge in edges]
+    edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.7, color='#888'), hoverinfo='none', mode='lines')
+    
+    annotations = [dict(x=pos[node['id']][0], y=pos[node['id']][1], text=node['label'], showarrow=False, font=dict(size=9, color='black'), xanchor='center', yshift= -node_size[i]/2 - 10) for i, node in enumerate(nodes)]
+    
+    fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(title="Content Structure & Entity Gap Map", titlefont_size=16, showlegend=False, hovermode='closest', margin=dict(b=20,l=5,r=5,t=40), annotations=annotations, xaxis=dict(showgrid=False, zeroline=False, showticklabels=False), yaxis=dict(showgrid=False, zeroline=False, showticklabels=False), plot_bgcolor='white', height=800))
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="paper", text="<b>Legend:</b>", showarrow=False, xanchor="left"); fig.add_annotation(x=0.02, y=0.94, xref="paper", yref="paper", text="<span style='font-size: 18px; color:rgba(220, 220, 220, 1);'>●</span> Content Section", showarrow=False, xanchor="left"); fig.add_annotation(x=0.02, y=0.90, xref="paper", yref="paper", text="<span style='font-size: 18px; color:rgba(28, 117, 215, 1);'>●</span> Your Entity", showarrow=False, xanchor="left"); fig.add_annotation(x=0.02, y=0.86, xref="paper", yref="paper", text="<span style='font-size: 18px; color:rgba(255, 100, 100, 1);'>●</span> Missing Entity (Gap)", showarrow=False, xanchor="left")
     return fig
 
 def split_text_into_passages(text, passage_length=200):
-    """Split text into passages of roughly equal length."""
-    if not text:
-        return []
-
-    words = text.split()
-    passages = []
-
-    for i in range(0, len(words), passage_length):
-        passage = ' '.join(words[i:i + passage_length])
-        if passage.strip():
-            passages.append(passage.strip())
-
-    return passages
+    if not text: return []
+    words = text.split(); passages = [' '.join(words[i:i + passage_length]) for i in range(0, len(words), passage_length)]
+    return [p.strip() for p in passages if p.strip()]
 
 def find_entity_best_passage(entity_name, passages, model):
-    """Find the passage where the entity has highest semantic relevance."""
-    if not passages or not model:
-        return {"passage": "", "similarity": 0.0, "index": -1}
-
-    try:
-        entity_embedding = model.encode([entity_name])
-        passage_embeddings = model.encode(passages)
-
-        similarities = cosine_similarity(entity_embedding, passage_embeddings)[0]
-        best_idx = np.argmax(similarities)
-
-        return {
-            "passage": passages[best_idx],
-            "similarity": float(similarities[best_idx]),
-            "index": int(best_idx)
-        }
-    except Exception as e:
-        st.warning(f"Failed to find best passage for '{entity_name}': {e}")
-        return {"passage": "", "similarity": 0.0, "index": -1}
+    if not passages or not model: return {"passage": "", "similarity": 0.0, "index": -1}
+    try: entity_embedding = model.encode([entity_name]); passage_embeddings = model.encode(passages); similarities = cosine_similarity(entity_embedding, passage_embeddings)[0]; best_idx = np.argmax(similarities); return {"passage": passages[best_idx], "similarity": float(similarities[best_idx]), "index": int(best_idx)}
+    except Exception as e: st.warning(f"Failed to find best passage for '{entity_name}': {e}"); return {"passage": "", "similarity": 0.0, "index": -1}
 
 def generate_semantic_implementation_analysis(entity_name, primary_content, best_passage, target_query, entity_info):
-    """Generate Gemini-powered analysis for implementing missing entities."""
-
-    if not st.session_state.get('gemini_api_configured', False):
-        return None
-
+    if not st.session_state.get('gemini_api_configured', False): return None
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
-        model = genai.GenerativeModel("gemini-2.5-pro")
-
-        # Analyze content tone and style
-        tone_analysis_prompt = f"""
-        Analyze the writing tone, style, and voice of this content sample:
-
-        "{primary_content[:2000]}"
-
-        Provide a brief analysis of:
-        1. Writing tone (formal/informal, technical/accessible, etc.)
-        2. Style characteristics (sentence structure, vocabulary level, etc.)
-        3. Target audience level
-
-        Keep your analysis concise and focused on actionable style guidelines.
-        """
-
-        tone_response = model.generate_content(tone_analysis_prompt)
-        tone_analysis = tone_response.text.strip()
-
-        # Generate implementation strategy
-        implementation_prompt = f"""
-        Based on this content analysis and the target query "{target_query}", provide strategic recommendations for implementing the entity "{entity_name}" into the content.
-
-        CONTENT TONE ANALYSIS:
-        {tone_analysis}
-
-        ENTITY TO IMPLEMENT: {entity_name}
-        - Type: {entity_info.get('Type', 'Unknown')}
-        - Query Relevance: {entity_info.get('Query Relevance', 0):.3f}
-        - Found on {entity_info.get('Found On', 0)} competitor sites
-
-        BEST INSERTION LOCATION (Context):
-        "{best_passage}"
-
-        CURRENT CONTENT SAMPLE (for broader context):
-        "{primary_content[:1500]}"
-
-        Provide a strategic analysis with the following structure:
-
-        ### 1. Why Implement This Entity
-        - **Strategic Value:** Explain its importance for the target query "{target_query}".
-        - **SEO & User Benefit:** How does it close a content gap and improve user experience?
-
-        ### 2. Where to Implement
-        - **Optimal Placement:** Recommend a specific section or paragraph for insertion, referencing the provided "Best Insertion Location" context.
-        - **Integration:** How can it be woven into the existing content flow naturally?
-
-        ### 3. How to Implement (Actionable Examples)
-        - **Content Suggestions:** Provide 2-3 specific, actionable examples of sentences or short paragraphs that could be added. These examples **must** match the tone and style identified in the analysis.
-        - **Depth & Angle:** Suggest the angle to take (e.g., definition, example, benefit, comparison).
-
-        Keep recommendations practical, specific, and aligned with the content's existing voice. Focus on seamless integration rather than forced insertion.
-        """
-
-        implementation_response = model.generate_content(implementation_prompt)
-        return implementation_response.text.strip()
-
-    except Exception as e:
-        st.error(f"Gemini analysis failed: {e}")
-        return None
+        import google.generativeai as genai; genai.configure(api_key=st.session_state.gemini_api_key_to_persist); model = genai.GenerativeModel("gemini-1.5-flash")
+        tone_analysis_prompt = f"""Analyze the writing tone, style, and voice of this content sample: "{primary_content[:2000]}" Provide a brief analysis of: 1. Tone 2. Style 3. Audience. Keep it concise."""
+        tone_response = model.generate_content(tone_analysis_prompt); tone_analysis = tone_response.text.strip()
+        implementation_prompt = f"""Based on the target query "{target_query}" and analysis, provide recommendations for implementing entity "{entity_name}". TONE: {tone_analysis}. ENTITY: {entity_name} (Type: {entity_info.get('Type', 'Unknown')}, Query Relevance: {entity_info.get('Query Relevance', 0):.3f}). CONTEXT: "{best_passage}". Provide: 1. Why to Implement. 2. Where to Implement. 3. How to Implement (2-3 actionable examples)."""
+        implementation_response = model.generate_content(implementation_prompt); return implementation_response.text.strip()
+    except Exception as e: st.error(f"Gemini analysis failed: {e}"); return None
 
 # --- Content Fetching Functions ---
 def initialize_selenium_driver():
-    """Initialize Selenium driver with stealth configuration."""
-    options = ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    try:
-        driver = webdriver.Chrome(service=ChromeService(), options=options)
-        stealth(driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True)
-        return driver
-    except Exception as e:
-        st.error(f"Selenium initialization failed: {e}")
-        return None
-
+    options = ChromeOptions(); options.add_argument("--headless"); options.add_argument("--no-sandbox"); options.add_argument("--disable-dev-shm-usage"); options.add_argument("--disable-gpu")
+    try: driver = webdriver.Chrome(service=ChromeService(), options=options); stealth(driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True); return driver
+    except Exception as e: st.error(f"Selenium initialization failed: {e}"); return None
 def fetch_content_with_zyte(url, api_key):
-    """Fetch content using Zyte API."""
-    if not api_key:
-        st.error("Zyte API key not configured.")
-        return None
-
-    enforce_rate_limit()
-    st.write(f"_Fetching with Zyte API: {url}..._")
-
+    if not api_key: st.error("Zyte API key not configured."); return None
+    enforce_rate_limit(); st.write(f"_Fetching with Zyte API: {url}..._")
     try:
-        response = requests.post(
-            "https://api.zyte.com/v1/extract",
-            auth=(api_key, ''),
-            json={'url': url, 'httpResponseBody': True},
-            timeout=45
-        )
-        response.raise_for_status()
-
-        data = response.json()
-        if data.get('httpResponseBody'):
-            return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
-        else:
-            st.error(f"Zyte API did not return content for {url}")
-            return None
-
-    except requests.exceptions.HTTPError as e:
-        st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code}")
-        return None
-    except Exception as e:
-        st.error(f"Zyte API error for {url}: {e}")
-        return None
-
+        response = requests.post("https://api.zyte.com/v1/extract", auth=(api_key, ''), json={'url': url, 'httpResponseBody': True}, timeout=45); response.raise_for_status(); data = response.json()
+        if data.get('httpResponseBody'): return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
+        else: st.error(f"Zyte API did not return content for {url}"); return None
+    except Exception as e: st.error(f"Zyte API error for {url}: {e}"); return None
 def fetch_content_with_selenium(url, driver_instance):
-    """Fetch content using Selenium with proper fallback."""
-    if not driver_instance:
-        return fetch_content_with_requests(url)
-    try:
-        enforce_rate_limit()
-        driver_instance.get(url)
-        time.sleep(5)
-        return driver_instance.page_source
-    except Exception as e:
-        st.error(f"Selenium fetch error for {url}: {e}")
-        st.session_state.selenium_driver_instance = None
-        st.warning(f"Selenium failed for {url}. Falling back to requests.")
-        try:
-            return fetch_content_with_requests(url)
-        except Exception as req_e:
-            st.error(f"Requests fallback also failed for {url}: {req_e}")
-            return None
-
+    if not driver_instance: return fetch_content_with_requests(url)
+    try: enforce_rate_limit(); driver_instance.get(url); time.sleep(5); return driver_instance.page_source
+    except Exception as e: st.error(f"Selenium fetch error for {url}: {e}"); st.warning(f"Falling back to requests."); return fetch_content_with_requests(url)
 def fetch_content_with_requests(url):
-    """Fetch content using requests with user agent rotation."""
-    enforce_rate_limit()
-    headers = {'User-Agent': get_random_user_agent()}
-    try:
-        response = requests.get(url, timeout=20, headers=headers)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        st.error(f"Requests error for {url}: {e}")
-        return None
-
+    enforce_rate_limit(); headers = {'User-Agent': get_random_user_agent()}
+    try: response = requests.get(url, timeout=20, headers=headers); response.raise_for_status(); return response.text
+    except Exception as e: st.error(f"Requests error for {url}: {e}"); return None
 def extract_clean_text(html_content):
-    """Extract clean text from HTML."""
-    if not html_content:
-        return ""
-
-    soup = BeautifulSoup(html_content, 'html.parser')
-
-    # Remove unwanted elements
-    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']):
-        if el.name:
-            el.decompose()
-
-    # Get clean text
-    text = soup.get_text(separator=' ')
-    # Clean up whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    if not html_content: return ""
+    soup = BeautifulSoup(html_content, 'html.parser'); [el.decompose() for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']) if el.name]; return re.sub(r'\s+', ' ', soup.get_text(separator=' ')).strip()
 
 # --- Main UI ---
-st.title("🎯 Entity Gap Analysis Tool")
-st.markdown("**Analyze entity gaps between your content and competitors, with query-specific relevance scoring.**")
-
-# --- Configuration ---
-st.sidebar.subheader("📊 Analysis Configuration")
-target_query = st.sidebar.text_input(
-    "Target Search Query:",
-    "server-side rendering benefits",
-    help="The search query to measure entity relevance against",
-    disabled=st.session_state.processing,
-    key="target_query_input"
-)
-
-scraping_method = st.sidebar.selectbox(
-    "Scraping Method:",
-    ["Requests (fast)", "Zyte API (best)", "Selenium (for JS)"],
-    index=0,
-    disabled=st.session_state.processing,
-    key="scraping_method_select"
-)
-
-st.sidebar.subheader("🔗 URL Configuration")
-primary_url = st.sidebar.text_input(
-    "Your Primary URL:",
-    "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices",
-    disabled=st.session_state.processing,
-    key="primary_url_input"
-)
-
-competitor_urls = st.sidebar.text_area(
-    "Competitor URLs (one per line):",
-    "https://prismic.io/blog/what-is-ssr\nhttps://nextjs.org/docs/pages/building-your-application/rendering/server-side-rendering",
-    height=100,
-    disabled=st.session_state.processing,
-    key="competitor_urls_input"
-)
-
-# --- Analysis Button ---
+st.title("🎯 Entity Gap Analysis Tool"); st.markdown("**Analyze entity gaps between your content and competitors, with query-specific relevance scoring.**")
+st.sidebar.subheader("📊 Analysis Configuration"); target_query = st.sidebar.text_input("Target Search Query:", "server-side rendering benefits", help="The search query to measure entity relevance against", disabled=st.session_state.processing, key="target_query_input"); scraping_method = st.sidebar.selectbox("Scraping Method:", ["Requests (fast)", "Zyte API (best)", "Selenium (for JS)"], index=0, disabled=st.session_state.processing, key="scraping_method_select"); st.sidebar.subheader("🔗 URL Configuration"); primary_url = st.sidebar.text_input("Your Primary URL:", "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices", disabled=st.session_state.processing, key="primary_url_input"); competitor_urls = st.sidebar.text_area("Competitor URLs (one per line):", "https://prismic.io/blog/what-is-ssr\nhttps://nextjs.org/docs/pages/building-your-application/rendering/server-side-rendering", height=100, disabled=st.session_state.processing, key="competitor_urls_input")
 analysis_disabled = not st.session_state.gcp_nlp_configured or st.session_state.processing
-
 if st.sidebar.button("🚀 Analyze Entity Gaps", disabled=analysis_disabled, type="primary", key="analyze_btn"):
-    if not target_query or not primary_url or not competitor_urls:
-        st.error("Please fill in all required fields.")
-    else:
-        st.session_state.processing = True
-        st.rerun()
+    if not target_query or not primary_url or not competitor_urls: st.error("Please fill in all required fields.")
+    else: st.session_state.processing = True; st.rerun()
 
 # --- Main Processing ---
 if st.session_state.processing:
     try:
-        # Load embedding model
         if not st.session_state.embedding_model:
-            with st.spinner("Loading embedding model..."):
-                st.session_state.embedding_model = load_embedding_model()
-
-        if not st.session_state.embedding_model:
-            st.error("Failed to load embedding model.")
-            st.stop()
-
-        # Parse URLs
-        competitor_url_list = [url.strip() for url in competitor_urls.split('\n') if url.strip()]
-        all_urls = [primary_url] + competitor_url_list
-
-        # Fetch content
-        url_content = {}
-        url_entities = {}
-
-        # Initialize Selenium if needed
+            with st.spinner("Loading embedding model..."): st.session_state.embedding_model = load_embedding_model()
+        if not st.session_state.embedding_model: st.error("Failed to load embedding model."); st.stop()
+        competitor_url_list = [url.strip() for url in competitor_urls.split('\n') if url.strip()]; all_urls = [primary_url] + competitor_url_list; url_content, url_entities = {}, {}
         if scraping_method.startswith("Selenium") and not st.session_state.selenium_driver_instance:
-            with st.spinner("Initializing Selenium WebDriver..."):
-                st.session_state.selenium_driver_instance = initialize_selenium_driver()
-
+            with st.spinner("Initializing Selenium..."): st.session_state.selenium_driver_instance = initialize_selenium_driver()
         with st.spinner(f"Fetching content from {len(all_urls)} URLs..."):
             for i, url in enumerate(all_urls):
                 st.write(f"Fetching {i+1}/{len(all_urls)}: {url}")
-
-                # Choose fetching method
-                if scraping_method.startswith("Zyte") and st.session_state.zyte_api_configured:
-                    content = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
-                elif scraping_method.startswith("Selenium"):
-                    content = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
-                else:
-                    content = fetch_content_with_requests(url)
-
+                if scraping_method.startswith("Zyte") and st.session_state.zyte_api_configured: content = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
+                elif scraping_method.startswith("Selenium"): content = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
+                else: content = fetch_content_with_requests(url)
                 if content:
                     clean_text = extract_clean_text(content)
-                    if clean_text and len(clean_text) > 100:
-                        url_content[url] = clean_text
-                        st.success(f"✅ Fetched {len(clean_text):,} characters")
-                    else:
-                        st.warning(f"⚠️ Insufficient content from {url}")
-                else:
-                    st.error(f"❌ Failed to fetch {url}")
-
-        # Clean up Selenium if used
-        if st.session_state.selenium_driver_instance:
-            st.session_state.selenium_driver_instance.quit()
-            st.session_state.selenium_driver_instance = None
-
-        if not url_content:
-            st.error("No content was successfully fetched. Please check your URLs and try again.")
-            st.stop()
-
-        # Extract entities
+                    if clean_text and len(clean_text) > 100: url_content[url] = clean_text; st.success(f"✅ Fetched {len(clean_text):,} characters")
+                    else: st.warning(f"⚠️ Insufficient content from {url}")
+                else: st.error(f"❌ Failed to fetch {url}")
+        if st.session_state.selenium_driver_instance: st.session_state.selenium_driver_instance.quit(); st.session_state.selenium_driver_instance = None
+        if not url_content: st.error("No content fetched. Check URLs."); st.stop()
         with st.spinner("Extracting entities from all URLs..."):
             for url, content in url_content.items():
-                st.write(f"Extracting entities from: {url}")
-                entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
-
-                if entities:
-                    url_entities[url] = entities
-                    st.success(f"✅ Found {len(entities)} entities")
-                else:
-                    st.warning(f"⚠️ No entities extracted from {url}")
-
-        # Store results
-        st.session_state.entity_analysis_results = url_entities
-        st.session_state.content_passages = {}
-
-        # Split primary URL content into passages
-        if primary_url in url_content:
-            passages = split_text_into_passages(url_content[primary_url])
-            st.session_state.content_passages[primary_url] = passages
-
+                st.write(f"Extracting entities from: {url}"); entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
+                if entities: url_entities[url] = entities; st.success(f"✅ Found {len(entities)} entities")
+                else: st.warning(f"⚠️ No entities extracted from {url}")
+        st.session_state.entity_analysis_results = url_entities; st.session_state.content_passages = {}
+        if primary_url in url_content: passages = split_text_into_passages(url_content[primary_url]); st.session_state.content_passages[primary_url] = passages
         st.success("✅ Entity analysis complete!")
-
-    finally:
-        st.session_state.processing = False
-        st.rerun()
+    finally: st.session_state.processing = False; st.rerun()
 
 # --- Results Display ---
 if st.session_state.entity_analysis_results:
-    st.markdown("---")
-    st.subheader("📊 Entity Gap Analysis Results")
-
-    # Get primary URL entities
+    st.markdown("---"); st.subheader("📊 Entity Gap Analysis Results")
     primary_entities = st.session_state.entity_analysis_results.get(primary_url, {})
-
-    if not primary_entities:
-        st.error("No entities found in primary URL.")
+    primary_entity_analysis, missing_entities = [], []
+    if not primary_entities: st.error("No entities found in primary URL.")
     else:
-        # Collect all competitor entities
-        competitor_entities = {}
-        for url, entities in st.session_state.entity_analysis_results.items():
-            if url != primary_url:
-                for entity_key, entity_data in entities.items():
-                    if entity_key not in competitor_entities:
-                        competitor_entities[entity_key] = {
-                            'data': entity_data,
-                            'found_on': []
-                        }
-                    competitor_entities[entity_key]['found_on'].append(url)
-
-        # Calculate entity gaps with better matching
-        primary_entity_keys = set(primary_entities.keys())
-        primary_entity_names = {entity_data['name'].lower() for entity_data in primary_entities.values()}
-        missing_entities = []
-
-        for entity_key, comp_data in competitor_entities.items():
-            entity_name = comp_data['data']['name']
-            entity_name_lower = entity_name.lower()
-
-            # Check both exact key match and name similarity
-            is_missing = (entity_key not in primary_entity_keys and
-                         entity_name_lower not in primary_entity_names and
-                         not any(entity_name_lower in primary_name or primary_name in entity_name_lower
-                                for primary_name in primary_entity_names))
-
-            if is_missing:
-                # Calculate query relevance
-                query_similarity = calculate_entity_query_relevance(
-                    entity_name,
-                    target_query,
-                    st.session_state.embedding_model
-                )
-
-                # Calculate combined score
-                combined_score = (comp_data['data']['salience'] + query_similarity) / 2
-
-                # Only include entities with meaningful scores
-                if combined_score > 0.15:  # Filter out very low relevance entities
-                    missing_entities.append({
-                        'Entity': entity_name,
-                        'Type': comp_data['data']['type'],
-                        'Document Salience': comp_data['data']['salience'],
-                        'Query Relevance': query_similarity,
-                        'Combined Score': combined_score,
-                        'Found On': len(comp_data['found_on']),
-                        'URLs': ', '.join([f"`{url.split('//')[-1].split('/')[0]}`" for url in comp_data['found_on'][:2]])
-                    })
-
-        # Display gaps
+        competitor_entities = {}; [competitor_entities.setdefault(key, {'data': data, 'found_on': []}).get('found_on').append(url) for url, entities in st.session_state.entity_analysis_results.items() if url != primary_url for key, data in entities.items()]
+        primary_entity_keys = set(primary_entities.keys()); primary_entity_names = {data['name'].lower() for data in primary_entities.values()}
+        for key, comp_data in competitor_entities.items():
+            entity_name_lower = comp_data['data']['name'].lower()
+            if key not in primary_entity_keys and entity_name_lower not in primary_entity_names and not any(entity_name_lower in pn or pn in entity_name_lower for pn in primary_entity_names):
+                query_sim = calculate_entity_query_relevance(comp_data['data']['name'], target_query, st.session_state.embedding_model); combined_score = (comp_data['data']['salience'] + query_sim) / 2
+                if combined_score > 0.15: missing_entities.append({'Entity': comp_data['data']['name'], 'Type': comp_data['data']['type'], 'Document Salience': comp_data['data']['salience'], 'Query Relevance': query_sim, 'Combined Score': combined_score, 'Found On': len(comp_data['found_on']), 'URLs': ', '.join([f"`{url.split('//')[-1].split('/')[0]}`" for url in comp_data['found_on'][:2]])})
         if missing_entities:
-            st.subheader("❗ Missing Entities (Found in Competitors)")
-
-            gap_df = pd.DataFrame(missing_entities)
-            gap_df = gap_df.sort_values('Combined Score', ascending=False)
-
-            st.dataframe(
-                gap_df,
-                use_container_width=True,
-                column_config={
-                    "Document Salience": st.column_config.ProgressColumn(
-                        "Document Salience",
-                        format="%.3f",
-                        min_value=0,
-                        max_value=1,
-                    ),
-                    "Query Relevance": st.column_config.ProgressColumn(
-                        "Query Relevance",
-                        format="%.3f",
-                        min_value=0,
-                        max_value=1,
-                    ),
-                    "Combined Score": st.column_config.ProgressColumn(
-                        "Combined Score",
-                        format="%.3f",
-                        min_value=0,
-                        max_value=1,
-                    ),
-                }
-            )
-        else:
-            st.success("✅ No entity gaps found! Your content covers all entities found in competitors.")
-
-        # Display primary URL entities with query relevance
+            st.subheader("❗ Missing Entities (Found in Competitors)"); gap_df = pd.DataFrame(missing_entities).sort_values('Combined Score', ascending=False)
+            st.dataframe(gap_df, use_container_width=True, column_config={"Combined Score": st.column_config.ProgressColumn("Combined Score",format="%.3f",min_value=0,max_value=1), "Query Relevance": st.column_config.ProgressColumn("Query Relevance",format="%.3f",min_value=0,max_value=1), "Document Salience": st.column_config.ProgressColumn("Document Salience",format="%.3f",min_value=0,max_value=1)})
+        else: st.success("✅ No entity gaps found! Your content covers all entities found in competitors.")
+        
         st.subheader("📋 Your Content Entities vs Target Query")
+        for key, data in primary_entities.items(): query_sim = calculate_entity_query_relevance(data['name'], target_query, st.session_state.embedding_model); primary_entity_analysis.append({'Entity': data['name'], 'Type': data['type'], 'Document Salience': data['salience'], 'Query Relevance': query_sim, 'Combined Score': (data['salience'] + query_sim) / 2})
+        primary_df = pd.DataFrame(primary_entity_analysis).sort_values('Combined Score', ascending=False)
+        st.dataframe(primary_df, use_container_width=True, column_config={"Combined Score": st.column_config.ProgressColumn("Combined Score",format="%.3f",min_value=0,max_value=1), "Query Relevance": st.column_config.ProgressColumn("Query Relevance",format="%.3f",min_value=0,max_value=1), "Document Salience": st.column_config.ProgressColumn("Document Salience",format="%.3f",min_value=0,max_value=1)})
 
-        primary_entity_analysis = []
-        for entity_key, entity_data in primary_entities.items():
-            query_similarity = calculate_entity_query_relevance(
-                entity_data['name'],
-                target_query,
-                st.session_state.embedding_model
-            )
-
-            primary_entity_analysis.append({
-                'Entity': entity_data['name'],
-                'Type': entity_data['type'],
-                'Document Salience': entity_data['salience'],
-                'Query Relevance': query_similarity,
-                'Combined Score': (entity_data['salience'] + query_similarity) / 2
-            })
-
-        primary_df = pd.DataFrame(primary_entity_analysis)
-        primary_df = primary_df.sort_values('Combined Score', ascending=False)
-
-        st.dataframe(
-            primary_df,
-            use_container_width=True,
-            column_config={
-                "Document Salience": st.column_config.ProgressColumn(
-                    "Document Salience",
-                    format="%.3f",
-                    min_value=0,
-                    max_value=1,
-                ),
-                "Query Relevance": st.column_config.ProgressColumn(
-                    "Query Relevance",
-                    format="%.3f",
-                    min_value=0,
-                    max_value=1,
-                ),
-                "Combined Score": st.column_config.ProgressColumn(
-                    "Combined Score",
-                    format="%.3f",
-                    min_value=0,
-                    max_value=1,
-                ),
-            }
-        )
-
-        # Entity Relationship Graph with Enhanced Controls
-        if primary_entity_analysis and missing_entities:
-            st.markdown("---")
-            st.subheader("🕸️ Entity Relationship Graph")
-            st.markdown("_Visualize how your existing entities relate to missing entities and your target query._")
-
-            # Graph Configuration Controls
+        if st.session_state.content_passages.get(primary_url):
+            st.markdown("---"); st.subheader("🗺️ Content Structure & Entity Gap Map"); st.markdown("_This map visualizes the main thematic sections of your content. It shows which entities you've covered in each section and identifies gaps where missing entities should be added._")
             with st.expander("📊 Graph & Filter Controls", expanded=True):
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3 = st.columns(3); num_clusters = col1.slider("Content Sections to Identify", min_value=3, max_value=8, value=5, help="How many distinct topics to find in your content?"); max_primary = col2.slider("Max 'Your' Entities", 3, 25, 15, help="Show top N entities from your content"); max_missing = col3.slider("Max 'Missing' Entities", 3, 20, 15, help="Show top N missing entities")
+                filtered_primary = sorted(primary_entity_analysis, key=lambda x: x.get('Combined Score', 0), reverse=True)[:max_primary]
+                filtered_missing = sorted(missing_entities, key=lambda x: x.get('Combined Score', 0), reverse=True)[:max_missing]
+                missing_entity_names = [e['Entity'] for e in filtered_missing]; selected_entity_for_highlight = st.selectbox("🎯 Highlight a Missing Entity:", ["None"] + missing_entity_names, help="Choose a missing entity to highlight on the graph.")
+            
+            content_clusters = cluster_content_passages(st.session_state.content_passages[primary_url], st.session_state.embedding_model, num_clusters)
+            if content_clusters:
+                with st.spinner("Mapping entities to content structure..."):
+                    content_relationships = calculate_content_relationships(filtered_primary, filtered_missing, content_clusters, st.session_state.embedding_model)
+                    highlight = selected_entity_for_highlight if selected_entity_for_highlight != "None" else None
+                    content_graph = create_content_structure_graph(content_relationships, highlighted_entity=highlight)
+                if content_graph: st.plotly_chart(content_graph, use_container_width=True)
+                else: st.warning("Could not generate the content structure graph.")
+            else: st.warning("Could not analyze content structure. The article might be too short.")
 
-                with col1:
-                    max_primary = st.slider(
-                        "Max Primary Entities",
-                        min_value=3,
-                        max_value=25,
-                        value=12,
-                        step=1,
-                        help="Show top N entities from your content",
-                        key="max_primary_slider"
-                    )
-
-                with col2:
-                    max_missing = st.slider(
-                        "Max Missing Entities",
-                        min_value=3,
-                        max_value=20,
-                        value=8,
-                        step=1,
-                        help="Show top N missing entities from competitors",
-                        key="max_missing_slider"
-                    )
-
-                with col3:
-                    similarity_threshold = st.slider(
-                        "Connection Threshold",
-                        min_value=0.2,
-                        max_value=0.7,
-                        value=0.35,
-                        step=0.05,
-                        help="Minimum similarity to show a connection line between entities.",
-                        key="similarity_threshold_slider"
-                    )
-
-                # Entity Type Filters
-                entity_types = sorted(list(set(e.get('Type', 'UNKNOWN') for e in primary_entity_analysis + missing_entities)))
-
-                selected_types = st.multiselect(
-                    "Filter by Entity Type:",
-                    options=entity_types,
-                    default=entity_types,
-                    help="Select which entity types to include in the graph",
-                    key="entity_types_multiselect"
-                )
-
-            # Filter entities based on user selections
-            # Sort first, then filter by type, then slice
-            sorted_primary = sorted(primary_entity_analysis, key=lambda x: x['Combined Score'], reverse=True)
-            sorted_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)
-
-            filtered_primary = [e for e in sorted_primary if e.get('Type', 'UNKNOWN') in selected_types][:max_primary]
-            filtered_missing = [e for e in sorted_missing if e.get('Type', 'UNKNOWN') in selected_types][:max_missing]
-
-            # Entity selection for highlighting
-            if filtered_missing:
-                missing_entity_names = [entity['Entity'] for entity in filtered_missing]
-                selected_entity_for_graph = st.selectbox(
-                    "🎯 Highlight a Missing Entity in the Graph:",
-                    options=["None"] + missing_entity_names,
-                    index=0,
-                    help="Choose a missing entity to highlight in red on the graph below.",
-                    key="selected_entity_for_graph"
-                )
-            else:
-                selected_entity_for_graph = None
-                st.warning("No missing entities match the selected filters.")
-
-            # Calculate and display relationships
-            if filtered_primary or filtered_missing:
-                with st.spinner("Calculating entity relationships..."):
-                    relationships = calculate_entity_relationships(
-                        filtered_primary,
-                        filtered_missing,
-                        st.session_state.embedding_model,
-                        target_query,
-                        similarity_threshold=similarity_threshold
-                    )
-
-                    if relationships and (relationships['primary_entities'] or relationships['missing_entities']):
-                        selected_entity = selected_entity_for_graph if selected_entity_for_graph != "None" else None
-                        entity_graph = create_entity_relationship_graph(relationships, selected_missing_entity=selected_entity)
-                        if entity_graph:
-                            st.plotly_chart(entity_graph, use_container_width=True)
-                        else:
-                            st.warning("Could not generate entity relationship graph with current settings.")
-                    else:
-                        st.warning("No relationships found with current filter settings. Try lowering the thresholds.")
-            else:
-                st.warning("No entities to display. Please adjust your filters.")
-        else:
-            st.info("Entity relationship graph will appear once both primary and missing entities are analyzed.")
-
-        # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
-            st.markdown("---")
-            st.subheader("📍 Where to Add Missing Entities in Your Content")
-            st.markdown("_Select from all missing entities to find optimal insertion locations and get AI-powered implementation advice._")
-
-            passages = st.session_state.content_passages[primary_url]
-
-            # Sort missing entities by query relevance (show all, not just top N)
-            all_sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
-
-            # Entity selection dropdown
-            entity_options = [""] + [f"{e['Entity']} (Query Relevance: {e['Query Relevance']:.2f})" for e in all_sorted_missing]
-            entity_lookup = {f"{e['Entity']} (Query Relevance: {e['Query Relevance']:.2f})": e for e in all_sorted_missing}
-
-            selected_entity_display = st.selectbox(
-                "🔍 Select a missing entity to analyze:",
-                options=entity_options,
-                index=0,
-                help=f"All {len(all_sorted_missing)} missing entities are listed, sorted by relevance to your target query.",
-                key="selected_entity_display"
-            )
-
+            st.markdown("---"); st.subheader("📍 Where to Add Missing Entities in Your Content"); st.markdown("_Select a missing entity to find the best insertion point and get AI-powered implementation advice._")
+            all_sorted_missing = sorted(missing_entities, key=lambda x: x.get('Query Relevance', 0), reverse=True)
+            entity_options = [""] + [f"{e['Entity']} (Relevance: {e.get('Query Relevance', 0):.2f})" for e in all_sorted_missing]; entity_lookup = {f"{e['Entity']} (Relevance: {e.get('Query Relevance', 0):.2f})": e for e in all_sorted_missing}
+            selected_entity_display = st.selectbox("🔍 Select a missing entity to analyze:", options=entity_options, index=0, key="selected_entity_display")
             if selected_entity_display:
-                entity_info = entity_lookup[selected_entity_display]
-                entity_name = entity_info['Entity']
-
-                # Find best passage
-                best_passage_info = find_entity_best_passage(
-                    entity_name,
-                    passages,
-                    st.session_state.embedding_model
-                )
-
+                entity_info = entity_lookup[selected_entity_display]; entity_name = entity_info['Entity']; best_passage_info = find_entity_best_passage(entity_name, st.session_state.content_passages[primary_url], st.session_state.embedding_model)
                 col_a, col_b = st.columns([1, 2])
-                with col_a:
-                    st.markdown(f"**📊 Metrics for '{entity_name}'**")
-                    st.metric("Query Relevance", f"{entity_info['Query Relevance']:.3f}")
-                    st.metric("Combined Score", f"{entity_info['Combined Score']:.3f}")
-                    st.metric("Competitor Salience", f"{entity_info['Document Salience']:.3f}")
-                    st.markdown(f"- **Type:** `{entity_info['Type']}`")
-                    st.markdown(f"- **Found on:** `{entity_info['Found On']}` competitor site(s)")
-
+                with col_a: st.metric("Query Relevance", f"{entity_info.get('Query Relevance', 0):.3f}"); st.metric("Combined Score", f"{entity_info.get('Combined Score', 0):.3f}")
                 with col_b:
-                    if best_passage_info["similarity"] > 0.1:
-                        st.markdown("**🎯 Recommended Insertion Context**")
-                        st.markdown(f"The most semantically similar passage in your content (Relevance: **{best_passage_info['similarity']:.2f}**):")
-
-                        st.text_area(
-                            "Best passage for adding this entity:",
-                            value=best_passage_info["passage"],
-                            height=150,
-                            disabled=True,
-                            key=f"passage_{entity_name.replace(' ', '_')}"
-                        )
-                    else:
-                        st.markdown("**🤔 No strongly relevant passage found.**")
-                        st.info(f"This may indicate a need for a completely new section about '{entity_name}'.")
-
-                    # Add Gemini semantic analysis
+                    st.text_area("Best passage for adding this entity:", value=best_passage_info["passage"], height=120, disabled=True, key=f"passage_{entity_name}")
                     if st.session_state.get('gemini_api_configured', False):
-                        button_text = f"🤖 Get AI Implementation Strategy for '{entity_name}'"
-                        if st.button(button_text, key=f"gemini_{entity_name.replace(' ', '_')}"):
-                            with st.spinner("Generating strategic implementation analysis..."):
-                                passages_for_content = st.session_state.content_passages.get(primary_url, [])
-                                primary_content_sample = " ".join(passages_for_content)
-
-                                semantic_analysis = generate_semantic_implementation_analysis(
-                                    entity_name,
-                                    primary_content_sample,
-                                    best_passage_info["passage"],
-                                    target_query,
-                                    entity_info
-                                )
-                                if semantic_analysis:
-                                    st.markdown("---")
-                                    st.markdown(semantic_analysis)
-                                else:
-                                    st.error("Failed to generate implementation strategy.")
-                    else:
-                        st.info("💡 **Enable the Gemini API** in the sidebar to get AI-powered implementation strategies that match your content's tone and style.")
-
-# Footer
-st.sidebar.divider()
-st.sidebar.info("🎯 Entity Gap Analysis Tool v2.1")
-st.sidebar.markdown("**Created by [The SEO Consultant.ai](https://theseoconsultant.ai/)**")
+                        if st.button(f"🤖 Get AI Implementation Strategy for '{entity_name}'", key=f"gemini_{entity_name}"):
+                            with st.spinner("Generating AI strategy..."):
+                                primary_content = " ".join(st.session_state.content_passages[primary_url]); semantic_analysis = generate_semantic_implementation_analysis(entity_name, primary_content, best_passage_info["passage"], target_query, entity_info)
+                                if semantic_analysis: st.markdown("---"); st.markdown(semantic_analysis)
+                    else: st.info("💡 **Enable the Gemini API** in the sidebar to get AI-powered implementation strategies.")
+st.sidebar.divider(); st.sidebar.info("🎯 Entity Gap Analysis Tool v4.0"); st.sidebar.markdown("**Created by [The SEO Consultant.ai](https://theseoconsultant.ai/)**")
 
