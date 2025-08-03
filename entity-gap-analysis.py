@@ -340,33 +340,33 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
 
         # Primary to primary entity relationships (the missing piece!)
         for i in range(len(top_primary)):
-        for j in range(i + 1, len(top_primary)):  # Avoid duplicate edges and self-loops
-            primary_idx_i = i
-            primary_idx_j = j
-            similarity = similarity_matrix[primary_idx_i][primary_idx_j]
+            for j in range(i + 1, len(top_primary)):  # Avoid duplicate edges and self-loops
+                primary_idx_i = i
+                primary_idx_j = j
+                similarity = similarity_matrix[primary_idx_i][primary_idx_j]
         
-            if similarity > similarity_threshold:
-                relationships['edges'].append({
-                    'source': f"primary_{i}",
-                    'target': f"primary_{j}",
-                    'weight': float(similarity),
-                    'type': 'primary_to_primary'
-                })
+                if similarity > similarity_threshold:
+                    relationships['edges'].append({
+                        'source': f"primary_{i}",
+                        'target': f"primary_{j}",
+                        'weight': float(similarity),
+                        'type': 'primary_to_primary'
+                    })
 
         # Missing to missing entity relationships (optional - shows competitor content structure)
         for i in range(len(top_missing)):
-        for j in range(i + 1, len(top_missing)):
-            missing_idx_i = len(primary_names) + i
-            missing_idx_j = len(primary_names) + j
-            similarity = similarity_matrix[missing_idx_i][missing_idx_j]
+            for j in range(i + 1, len(top_missing)):
+                missing_idx_i = len(primary_names) + i
+                missing_idx_j = len(primary_names) + j
+                similarity = similarity_matrix[missing_idx_i][missing_idx_j]
         
-            if similarity > similarity_threshold:
-                relationships['edges'].append({
-                    'source': f"missing_{i}",
-                    'target': f"missing_{j}",
-                    'weight': float(similarity),
-                    'type': 'missing_to_missing'
-                })
+                if similarity > similarity_threshold:
+                    relationships['edges'].append({
+                        'source': f"missing_{i}",
+                        'target': f"missing_{j}",
+                        'weight': float(similarity),
+                        'type': 'missing_to_missing'
+                    })
         
         # Query to entity relationships with higher threshold
         query_idx = len(all_entity_names) - 1
