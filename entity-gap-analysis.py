@@ -442,17 +442,19 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
         node_colors.append('gold')
         node_sizes.append(25)
         
-        # Find query connections
+        # Find query connections with color coding
         query_connections = []
         for edge in relationships['edges']:
             if edge['source'] == 'query':
                 target_entity = next((e for e in all_entities if e['id'] == edge['target']), None)
                 if target_entity:
-                    query_connections.append(f"→ {target_entity['name']} ({edge['weight']:.3f})")
+                    status_indicator = "🔵 [Your Content]" if target_entity['node_type'] == 'primary' else "🟠 [Missing]"
+                    query_connections.append(f"→ {target_entity['name']} {status_indicator} ({edge['weight']:.3f})")
             elif edge['target'] == 'query':
                 source_entity = next((e for e in all_entities if e['id'] == edge['source']), None)
                 if source_entity:
-                    query_connections.append(f"← {source_entity['name']} ({edge['weight']:.3f})")
+                    status_indicator = "🔵 [Your Content]" if source_entity['node_type'] == 'primary' else "🟠 [Missing]"
+                    query_connections.append(f"← {source_entity['name']} {status_indicator} ({edge['weight']:.3f})")
         
         connections_text = "<br>".join(query_connections) if query_connections else "No connections above threshold"
         node_info.append(
