@@ -470,25 +470,27 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
             node_x.append(x)
             node_y.append(y)
             
-            # Find all connections for this entity
+            # Find all connections for this entity with color coding
             connections = []
             for edge in relationships['edges']:
                 if edge['source'] == entity['id']:
-                    # Find target entity name
+                    # Find target entity name with status
                     if edge['target'] == 'query':
-                        connections.append(f"🎯 {relationships['query_entity']} ({edge['weight']:.3f})")
+                        connections.append(f"🎯 {relationships['query_entity']} [Target Query] ({edge['weight']:.3f})")
                     else:
                         target_entity = next((e for e in all_entities if e['id'] == edge['target']), None)
                         if target_entity:
-                            connections.append(f"→ {target_entity['name']} ({edge['weight']:.3f})")
+                            status_indicator = "🔵 [Your Content]" if target_entity['node_type'] == 'primary' else "🟠 [Missing]"
+                            connections.append(f"→ {target_entity['name']} {status_indicator} ({edge['weight']:.3f})")
                 elif edge['target'] == entity['id']:
-                    # Find source entity name
+                    # Find source entity name with status
                     if edge['source'] == 'query':
-                        connections.append(f"🎯 {relationships['query_entity']} ({edge['weight']:.3f})")
+                        connections.append(f"🎯 {relationships['query_entity']} [Target Query] ({edge['weight']:.3f})")
                     else:
                         source_entity = next((e for e in all_entities if e['id'] == edge['source']), None)
                         if source_entity:
-                            connections.append(f"← {source_entity['name']} ({edge['weight']:.3f})")
+                            status_indicator = "🔵 [Your Content]" if source_entity['node_type'] == 'primary' else "🟠 [Missing]"
+                            connections.append(f"← {source_entity['name']} {status_indicator} ({edge['weight']:.3f})")
             
             # Node styling based on type and selection
             if entity['node_type'] == 'primary':
@@ -550,7 +552,7 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
                         hovermode='closest',
                         margin=dict(b=20,l=5,r=5,t=40),
                         annotations=[dict(
-                            text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity",
+                            text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity | Hover for color-coded connections",
                             showarrow=False,
                             xref="paper", yref="paper",
                             x=0.005, y=-0.002,
