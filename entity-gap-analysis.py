@@ -337,6 +337,36 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                         'weight': float(similarity),
                         'type': 'primary_to_missing'
                     })
+
+        # Primary to primary entity relationships (the missing piece!)
+        for i in range(len(top_primary)):
+        for j in range(i + 1, len(top_primary)):  # Avoid duplicate edges and self-loops
+            primary_idx_i = i
+            primary_idx_j = j
+            similarity = similarity_matrix[primary_idx_i][primary_idx_j]
+        
+            if similarity > similarity_threshold:
+                relationships['edges'].append({
+                    'source': f"primary_{i}",
+                    'target': f"primary_{j}",
+                    'weight': float(similarity),
+                    'type': 'primary_to_primary'
+                })
+
+        # Missing to missing entity relationships (optional - shows competitor content structure)
+        for i in range(len(top_missing)):
+        for j in range(i + 1, len(top_missing)):
+            missing_idx_i = len(primary_names) + i
+            missing_idx_j = len(primary_names) + j
+            similarity = similarity_matrix[missing_idx_i][missing_idx_j]
+        
+            if similarity > similarity_threshold:
+                relationships['edges'].append({
+                    'source': f"missing_{i}",
+                    'target': f"missing_{j}",
+                    'weight': float(similarity),
+                    'type': 'missing_to_missing'
+                })
         
         # Query to entity relationships with higher threshold
         query_idx = len(all_entity_names) - 1
@@ -414,7 +444,15 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
             x1, y1 = pos[target]
             edge_x.extend([x0, x1, None])
             edge_y.extend([y0, y1, None])
-            edge_info.append(f"{source} → {target}<br>Similarity: {edge['weight']:.3f}")
+
+            # Enhanced edge info with relationship type
+            edge_type = edge.get('type', 'unknown')
+            if edge_type == 'primary_to_primary':
+                edge_info.append(f"{source} ↔ {target}<br>Your Content Connection<br>Similarity: {edge['weight']:.3f}")
+            elif edge_type == 'missing_to_missing':
+                edge_info.append(f"{source} ↔ {target}<br>Competitor Content Connection<br>Similarity: {edge['weight']:.3f}")
+            else:
+                edge_info.append(f"{source} → {target}<br>Similarity: {edge['weight']:.3f}")
     
     # Create edge trace
     edge_trace = go.Scatter(
