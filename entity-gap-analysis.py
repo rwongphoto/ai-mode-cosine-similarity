@@ -1,3 +1,4 @@
+import streamlit as st
 import requests
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -109,51 +110,6 @@ with st.sidebar.expander("Zyte API (Optional)", expanded=False):
                 st.error(f"Zyte API Request Failed: {str(e)[:200]}")
         else:
             st.warning("Please enter Zyte API Key.")
-
-# Add this section to your sidebar after the Zyte API configuration
-
-with st.sidebar.expander("Gemini API (Optional)", expanded=False):
-    gemini_api_key_input = st.text_input(
-        "Enter Gemini API Key:", 
-        type="password", 
-        value=st.session_state.get("gemini_api_key_to_persist", ""), 
-        disabled=st.session_state.processing,
-        help="Required for AI-powered implementation strategies and content analysis"
-    )
-    
-    if st.button("Set & Verify Gemini Key", disabled=st.session_state.processing):
-        if gemini_api_key_input:
-            try:
-                # Test the Gemini API key
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_api_key_input)
-                model = genai.GenerativeModel("gemini-2.5-pro")
-                
-                # Simple test to verify the API key works
-                test_response = model.generate_content("Hello, respond with 'API key works'")
-                
-                if test_response and test_response.text:
-                    st.session_state.gemini_api_key_to_persist = gemini_api_key_input
-                    st.session_state.gemini_api_configured = True
-                    st.success("Gemini API Key Configured!")
-                    st.rerun()
-                else:
-                    st.session_state.gemini_api_configured = False
-                    st.error("Gemini API Key verification failed - no response received")
-                    
-            except Exception as e:
-                st.session_state.gemini_api_configured = False
-                st.error(f"Gemini API Key verification failed: {str(e)}")
-        else:
-            st.warning("Please enter a Gemini API Key.")
-    
-    # Clear key button
-    if st.session_state.get('gemini_api_configured', False):
-        if st.button("🗑️ Clear Gemini Key", disabled=st.session_state.processing):
-            st.session_state.gemini_api_key_to_persist = ""
-            st.session_state.gemini_api_configured = False
-            st.success("Gemini API key cleared!")
-            st.rerun()
 
 st.sidebar.markdown("---")
 if st.session_state.get("gcp_nlp_configured"): 
