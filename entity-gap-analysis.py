@@ -201,7 +201,262 @@ def load_embedding_model():
         st.error(f"Failed to load embedding model: {e}")
         return None
 
-def calculate_entity_query_relevance(entity_name, query_text, model):
+def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query):
+    """Calculate relationships between primary entities and missing entities."""
+    if not embedding_model:
+        return {}
+    
+    relationships = {
+        'primary_entities': [],
+        'missing_entities': [],
+        'edges': [],
+        'query_entity': target_query
+    }
+    
+    try:
+        # Prepare entity lists
+        primary_names = [entity['Entity'] for entity in primary_entities]
+        missing_names = [entity['Entity'] for entity in missing_entities]
+        all_entity_names = primary_names + missing_names + [target_query]
+        
+        # Calculate embeddings for all entities
+        if not all_entity_names:
+            return relationships
+            
+        entity_embeddings = embedding_model.encode(all_entity_names)
+        
+        # Calculate similarity matrix
+        similarity_matrix = cosine_similarity(entity_embeddings)
+        
+        # Add primary entities to graph
+        for i, entity in enumerate(primary_entities):
+            relationships['primary_entities'].append({
+                'id': f"primary_{i}",
+                'name': entity['Entity'],
+                'type': entity.get('Type', 'UNKNOWN'),
+                'salience': entity.get('Document Salience', 0),
+                'query_relevance': entity.get('Query Relevance', 0),
+                'combined_score': entity.get('Combined Score', 0),
+                'node_type': 'primary'
+            })
+        
+        # Add missing entities to graph
+        for i, entity in enumerate(missing_entities):
+            relationships['missing_entities'].append({
+                'id': f"missing_{i}",
+                'name': entity['Entity'],
+                'type': entity.get('Type', 'UNKNOWN'),
+                'salience': entity.get('Document Salience', 0),
+                'query_relevance': entity.get('Query Relevance', 0),
+                'combined_score': entity.get('Combined Score', 0),
+                'node_type': 'missing'
+            })
+        
+        # Calculate edges (relationships) with similarity threshold
+        similarity_threshold = 0.3  # Only show meaningful relationships
+        
+        # Primary to missing entity relationships
+        for i, primary_entity in enumerate(primary_entities):
+            primary_idx = i
+            for j, missing_entity in enumerate(missing_entities):
+                missing_idx = len(primary_names) + j
+                similarity = similarity_matrix[primary_idx][missing_idx]
+                
+                if similarity > similarity_threshold:
+                    relationships['edges'].append({
+                        'source': f"primary_{i}",
+                        'target': f"missing_{j}",
+                        'weight': float(similarity),
+                        'type': 'primary_to_missing'
+                    })
+        
+        # Query to entity relationships
+        query_idx = len(all_entity_names) - 1
+        
+        # Query to primary entities
+        for i, primary_entity in enumerate(primary_entities):
+            similarity = similarity_matrix[i][query_idx]
+            if similarity > similarity_threshold:
+                relationships['edges'].append({
+                    'source': 'query',
+                    'target': f"primary_{i}",
+                    'weight': float(similarity),
+                    'type': 'query_to_primary'
+                })
+        
+        # Query to missing entities
+        for j, missing_entity in enumerate(missing_entities):
+            missing_idx = len(primary_names) + j
+            similarity = similarity_matrix[missing_idx][query_idx]
+            if similarity > similarity_threshold:
+                relationships['edges'].append({
+                    'source': 'query',
+                    'target': f"missing_{j}",
+                    'weight': float(similarity),
+                    'type': 'query_to_missing'
+                })
+        
+        return relationships
+        
+    except Exception as e:
+        st.error(f"Error calculating entity relationships: {e}")
+        return relationships
+
+def create_entity_relationship_graph(relationships, selected_missing_entity=None):
+    """Create an interactive entity relationship graph using Plotly."""
+    
+    if not relationships or (not relationships['primary_entities'] and not relationships['missing_entities']):
+        return None
+    
+    # Create NetworkX graph for layout calculation
+    G = nx.Graph()
+    
+    # Add nodes
+    all_entities = relationships['primary_entities'] + relationships['missing_entities']
+    
+    # Add query node
+    G.add_node('query', node_type='query')
+    
+    for entity in all_entities:
+        G.add_node(entity['id'], **entity)
+    
+    # Add edges
+    for edge in relationships['edges']:
+        G.add_edge(edge['source'], edge['target'], weight=edge['weight'])
+    
+    # Calculate layout
+    try:
+        pos = nx.spring_layout(G, k=3, iterations=50, seed=42)
+    except:
+        # Fallback to circular layout if spring layout fails
+        pos = nx.circular_layout(G)
+    
+    # Prepare data for Plotly
+    edge_x = []
+    edge_y = []
+    edge_info = []
+    
+    for edge in relationships['edges']:
+        source = edge['source']
+        target = edge['target']
+        
+        if source in pos and target in pos:
+            x0, y0 = pos[source]
+            x1, y1 = pos[target]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+            edge_info.append(f"{source} → {target}<br>Similarity: {edge['weight']:.3f}")
+    
+    # Create edge trace
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=1, color='rgba(125,125,125,0.5)'),
+        hoverinfo='none',
+        mode='lines',
+        showlegend=False
+    )
+    
+    # Prepare node data
+    node_x = []
+    node_y = []
+    node_text = []
+    node_colors = []
+    node_sizes = []
+    node_info = []
+    
+    # Add query node
+    if 'query' in pos:
+        qx, qy = pos['query']
+        node_x.append(qx)
+        node_y.append(qy)
+        node_text.append(f"🎯 {relationships['query_entity']}")
+        node_colors.append('gold')
+        node_sizes.append(25)
+        node_info.append(f"<b>Target Query</b><br>{relationships['query_entity']}")
+    
+    # Add entity nodes
+    for entity in all_entities:
+        if entity['id'] in pos:
+            x, y = pos[entity['id']]
+            node_x.append(x)
+            node_y.append(y)
+            
+            # Node styling based on type and selection
+            if entity['node_type'] == 'primary':
+                color = 'lightblue'
+                icon = '🔵'
+                size = 15 + (entity.get('combined_score', 0) * 10)
+            else:  # missing entity
+                if selected_missing_entity and entity['name'] == selected_missing_entity:
+                    color = 'red'  # Highlight selected missing entity
+                    icon = '🔴'
+                    size = 25
+                else:
+                    color = 'orange'
+                    icon = '🟠'
+                    size = 15 + (entity.get('combined_score', 0) * 10)
+            
+            # Truncate long names for display
+            display_name = entity['name']
+            if len(display_name) > 25:
+                display_name = display_name[:22] + "..."
+            
+            node_text.append(f"{icon} {display_name}")
+            node_colors.append(color)
+            node_sizes.append(size)
+            
+            # Hover info
+            node_info.append(
+                f"<b>{entity['name']}</b><br>"
+                f"Type: {entity['type']}<br>"
+                f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
+                f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
+                f"Status: {'In Your Content' if entity['node_type'] == 'primary' else 'Missing (Competitor)'}"
+            )
+    
+    # Create node trace
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        hoverinfo='text',
+        hovertext=node_info,
+        text=node_text,
+        textposition="middle center",
+        marker=dict(
+            size=node_sizes,
+            color=node_colors,
+            line=dict(width=2, color='white')
+        ),
+        textfont=dict(size=10),
+        showlegend=False
+    )
+    
+    # Create figure
+    fig = go.Figure(data=[edge_trace, node_trace],
+                   layout=go.Layout(
+                        title=dict(
+                            text=f"Entity Relationship Graph for Primary URL",
+                            x=0.5,
+                            font=dict(size=16)
+                        ),
+                        titlefont_size=16,
+                        showlegend=False,
+                        hovermode='closest',
+                        margin=dict(b=20,l=5,r=5,t=40),
+                        annotations=[ dict(
+                            text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity",
+                            showarrow=False,
+                            xref="paper", yref="paper",
+                            x=0.005, y=-0.002,
+                            xanchor='left', yanchor='bottom',
+                            font=dict(size=10)
+                        )],
+                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        plot_bgcolor='white'
+                        ))
+    
+    return fig
     """Calculate similarity between entity and target query."""
     if not model or not entity_name or not query_text:
         return 0.0
