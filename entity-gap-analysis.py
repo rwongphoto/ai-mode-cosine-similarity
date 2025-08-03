@@ -37,6 +37,12 @@ if "embedding_model" not in st.session_state: st.session_state.embedding_model =
 if "entity_relationships" not in st.session_state: st.session_state.entity_relationships = None
 if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_configured = False
 if "gemini_api_key_to_persist" not in st.session_state: st.session_state.gemini_api_key_to_persist = ""
+if "graph_config" not in st.session_state: st.session_state.graph_config = {
+    'max_primary': 15,
+    'max_missing': 10,
+    'min_score': 0.15,
+    'threshold': 0.4
+}
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -261,14 +267,14 @@ def calculate_entity_query_relevance(entity_name, query_text, model):
         st.warning(f"Failed to calculate similarity for '{entity_name}': {e}")
         return 0.0
 
-def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query):
+def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query, similarity_threshold=0.4):
     """Calculate relationships between primary entities and missing entities."""
     if not embedding_model:
         return {}
     
     # Filter to top entities for cleaner, more readable graph
-    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:15]  # Top 15 primary
-    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:10]   # Top 10 missing
+    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:len(primary_entities)]
+    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:len(missing_entities)]
     
     relationships = {
         'primary_entities': [],
@@ -316,9 +322,7 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                 'node_type': 'missing'
             })
         
-        # Calculate edges with higher similarity thresholds for cleaner graph
-        similarity_threshold = 0.4  # Higher threshold for fewer, stronger connections
-        
+        # Calculate edges with configurable similarity threshold
         # Primary to missing entity relationships
         for i, primary_entity in enumerate(top_primary):
             primary_idx = i
@@ -336,7 +340,7 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
         
         # Query to entity relationships with higher threshold
         query_idx = len(all_entity_names) - 1
-        query_threshold = 0.5  # Higher threshold for query connections
+        query_threshold = max(similarity_threshold + 0.1, 0.5)  # Slightly higher threshold for query connections
         
         # Query to primary entities
         for i, primary_entity in enumerate(top_primary):
@@ -557,18 +561,6 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
                         ))
     
     return fig
-    """Calculate similarity between entity and target query."""
-    if not model or not entity_name or not query_text:
-        return 0.0
-    
-    try:
-        entity_embedding = model.encode([entity_name])
-        query_embedding = model.encode([query_text])
-        similarity = cosine_similarity(entity_embedding, query_embedding)[0][0]
-        return float(similarity)
-    except Exception as e:
-        st.warning(f"Failed to calculate similarity for '{entity_name}': {e}")
-        return 0.0
 
 def split_text_into_passages(text, passage_length=200):
     """Split text into passages of roughly equal length."""
@@ -679,25 +671,6 @@ def generate_semantic_implementation_analysis(entity_name, primary_content, best
     except Exception as e:
         st.error(f"Gemini analysis failed: {e}")
         return None
-    """Find the passage where the entity has highest semantic relevance."""
-    if not passages or not model:
-        return {"passage": "", "similarity": 0.0, "index": -1}
-    
-    try:
-        entity_embedding = model.encode([entity_name])
-        passage_embeddings = model.encode(passages)
-        
-        similarities = cosine_similarity(entity_embedding, passage_embeddings)[0]
-        best_idx = np.argmax(similarities)
-        
-        return {
-            "passage": passages[best_idx],
-            "similarity": float(similarities[best_idx]),
-            "index": int(best_idx)
-        }
-    except Exception as e:
-        st.warning(f"Failed to find best passage for '{entity_name}': {e}")
-        return {"passage": "", "similarity": 0.0, "index": -1}
 
 # --- Content Fetching Functions ---
 def initialize_selenium_driver():
@@ -1040,21 +1013,111 @@ if st.session_state.entity_analysis_results:
         primary_df = pd.DataFrame(primary_entity_analysis)
         primary_df = primary_df.sort_values('Combined Score', ascending=False)
         
-        # Calculate and store entity relationships for the graph
+        # Interactive Entity Relationship Graph with Enhanced Controls
         if primary_entity_analysis and missing_entities:
-            with st.spinner("Calculating entity relationships..."):
-                st.session_state.entity_relationships = calculate_entity_relationships(
-                    primary_entity_analysis,
-                    missing_entities,
-                    st.session_state.embedding_model,
-                    target_query
-                )
-        
-        # Entity Relationship Graph
-        if st.session_state.entity_relationships:
             st.markdown("---")
             st.subheader("🕸️ Entity Relationship Graph")
             st.markdown("_Visualize how your existing entities relate to missing entities and your target query_")
+            
+            # Graph Configuration Controls
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                max_primary = st.slider(
+                    "Max Primary Entities", 
+                    min_value=5, 
+                    max_value=25, 
+                    value=st.session_state.graph_config['max_primary'], 
+                    step=5,
+                    help="Show top N entities from your content"
+                )
+            with col2:
+                max_missing = st.slider(
+                    "Max Missing Entities", 
+                    min_value=5, 
+                    max_value=20, 
+                    value=st.session_state.graph_config['max_missing'], 
+                    step=5,
+                    help="Show top N missing entities from competitors"
+                )
+            with col3:
+                similarity_threshold = st.slider(
+                    "Connection Threshold", 
+                    min_value=0.3, 
+                    max_value=0.7, 
+                    value=st.session_state.graph_config['threshold'], 
+                    step=0.1,
+                    help="Minimum similarity to show connections"
+                )
+            
+            # Entity Type Filters
+            st.markdown("**🏷️ Filter by Entity Types:**")
+            entity_types = set()
+            for entity in primary_entity_analysis + missing_entities:
+                entity_types.add(entity.get('Type', 'UNKNOWN'))
+            selected_types = st.multiselect(
+                "Show entity types:",
+                options=sorted(entity_types),
+                default=list(entity_types),
+                help="Select which entity types to include in the graph"
+            )
+            
+            # Score Threshold
+            min_score = st.slider(
+                "Minimum Combined Score",
+                min_value=0.0,
+                max_value=0.8,
+                value=st.session_state.graph_config['min_score'],
+                step=0.05,
+                help="Only show entities above this relevance threshold"
+            )
+            
+            # Add preset filter buttons for quick selection
+            st.markdown("**⚡ Quick Filters:**")
+            col_a, col_b, col_c, col_d = st.columns(4)
+            with col_a:
+                if st.button("🎯 High Relevance", help="Show only high-scoring entities"):
+                    st.session_state.graph_config = {
+                        'max_primary': 10,
+                        'max_missing': 8,
+                        'min_score': 0.4,
+                        'threshold': 0.5
+                    }
+                    st.rerun()
+            with col_b:
+                if st.button("🔍 Detailed View", help="Show more entities with lower threshold"):
+                    st.session_state.graph_config = {
+                        'max_primary': 20,
+                        'max_missing': 15,
+                        'min_score': 0.1,
+                        'threshold': 0.3
+                    }
+                    st.rerun()
+            with col_c:
+                if st.button("⚡ Focus Mode", help="Show only top entities"):
+                    st.session_state.graph_config = {
+                        'max_primary': 8,
+                        'max_missing': 5,
+                        'min_score': 0.3,
+                        'threshold': 0.5
+                    }
+                    st.rerun()
+            with col_d:
+                if st.button("🔄 Reset", help="Reset to defaults"):
+                    st.session_state.graph_config = {
+                        'max_primary': 15,
+                        'max_missing': 10,
+                        'min_score': 0.15,
+                        'threshold': 0.4
+                    }
+                    st.rerun()
+            
+            # Update current graph config
+            st.session_state.graph_config.update({
+                'max_primary': max_primary,
+                'max_missing': max_missing,
+                'min_score': min_score,
+                'threshold': similarity_threshold
+            })
             
             # Entity selection for highlighting
             missing_entity_names = [entity['Entity'] for entity in missing_entities]
@@ -1074,79 +1137,104 @@ if st.session_state.entity_analysis_results:
                     # Force recalculation of graph layout
                     st.rerun()
             
-            # Create and display the graph
-            selected_entity = selected_entity_for_graph if selected_entity_for_graph != "None" else None
+            # Filter entities based on user selections
+            filtered_primary = [
+                e for e in primary_entity_analysis 
+                if e.get('Type', 'UNKNOWN') in selected_types 
+                and e.get('Combined Score', 0) >= min_score
+            ][:max_primary]
             
-            entity_graph = create_entity_relationship_graph(
-                st.session_state.entity_relationships,
-                selected_missing_entity=selected_entity
-            )
+            filtered_missing = [
+                e for e in missing_entities 
+                if e.get('Type', 'UNKNOWN') in selected_types 
+                and e.get('Combined Score', 0) >= min_score
+            ][:max_missing]
             
-            if entity_graph:
-                st.plotly_chart(entity_graph, use_container_width=True, height=600)
+            if filtered_primary or filtered_missing:
+                with st.spinner("Calculating entity relationships..."):
+                    st.session_state.entity_relationships = calculate_entity_relationships(
+                        filtered_primary,
+                        filtered_missing,
+                        st.session_state.embedding_model,
+                        target_query,
+                        similarity_threshold=similarity_threshold
+                    )
                 
-                # Graph insights
-                with st.expander("📊 Graph Insights", expanded=False):
-                    relationships = st.session_state.entity_relationships
+                # Create and display the graph
+                selected_entity = selected_entity_for_graph if selected_entity_for_graph != "None" else None
+                
+                entity_graph = create_entity_relationship_graph(
+                    st.session_state.entity_relationships,
+                    selected_missing_entity=selected_entity
+                )
+                
+                if entity_graph:
+                    st.plotly_chart(entity_graph, use_container_width=True, height=600)
                     
-                    total_primary = len(relationships['primary_entities'])
-                    total_missing = len(relationships['missing_entities'])
-                    total_edges = len(relationships['edges'])
-                    
-                    col_a, col_b, col_c = st.columns(3)
-                    
-                    with col_a:
-                        st.metric("Your Entities", total_primary)
-                        st.metric("Missing Entities", total_missing)
-                    
-                    with col_b:
-                        st.metric("Total Relationships", total_edges)
-                        query_connections = len([e for e in relationships['edges'] if 'query' in e['source'] or 'query' in e['target']])
-                        st.metric("Query Connections", query_connections)
-                    
-                    with col_c:
-                        if total_edges > 0:
-                            avg_similarity = np.mean([e['weight'] for e in relationships['edges']])
-                            st.metric("Avg Similarity", f"{avg_similarity:.3f}")
+                    # Graph insights
+                    with st.expander("📊 Graph Insights", expanded=False):
+                        relationships = st.session_state.entity_relationships
                         
-                        strong_connections = len([e for e in relationships['edges'] if e['weight'] > 0.5])
-                        st.metric("Strong Connections", strong_connections)
-                    
-                    # Recommendations based on graph analysis
-                    st.markdown("**🎯 Key Insights:**")
-                    
-                    # Find most connected missing entities
-                    missing_connections = {}
-                    for edge in relationships['edges']:
-                        if edge['type'] == 'primary_to_missing':
-                            target = edge['target']
-                            if target not in missing_connections:
-                                missing_connections[target] = []
-                            missing_connections[target].append(edge['weight'])
-                    
-                    if missing_connections:
-                        # Find missing entity with strongest connections
-                        best_connected = max(missing_connections.items(), 
-                                           key=lambda x: (len(x[1]), max(x[1])))
-                        entity_id = best_connected[0]
-                        entity_name = next(e['name'] for e in relationships['missing_entities'] 
-                                         if e['id'] == entity_id)
+                        total_primary = len(relationships['primary_entities'])
+                        total_missing = len(relationships['missing_entities'])
+                        total_edges = len(relationships['edges'])
                         
-                        st.success(f"**Most Connected Missing Entity:** {entity_name} "
-                                 f"({len(best_connected[1])} connections, max similarity: {max(best_connected[1]):.3f})")
-                    
-                    # Find query-relevant missing entities
-                    query_missing_edges = [e for e in relationships['edges'] if e['type'] == 'query_to_missing']
-                    if query_missing_edges:
-                        best_query_edge = max(query_missing_edges, key=lambda x: x['weight'])
-                        target_id = best_query_edge['target']
-                        entity_name = next(e['name'] for e in relationships['missing_entities'] 
-                                         if e['id'] == target_id)
+                        col_a, col_b, col_c = st.columns(3)
                         
-                        st.info(f"**Most Query-Relevant Missing Entity:** {entity_name} "
-                               f"(similarity to query: {best_query_edge['weight']:.3f})")
+                        with col_a:
+                            st.metric("Your Entities", total_primary)
+                            st.metric("Missing Entities", total_missing)
+                        
+                        with col_b:
+                            st.metric("Total Relationships", total_edges)
+                            query_connections = len([e for e in relationships['edges'] if 'query' in e['source'] or 'query' in e['target']])
+                            st.metric("Query Connections", query_connections)
+                        
+                        with col_c:
+                            if total_edges > 0:
+                                avg_similarity = np.mean([e['weight'] for e in relationships['edges']])
+                                st.metric("Avg Similarity", f"{avg_similarity:.3f}")
+                            
+                            strong_connections = len([e for e in relationships['edges'] if e['weight'] > 0.5])
+                            st.metric("Strong Connections", strong_connections)
+                        
+                        # Recommendations based on graph analysis
+                        st.markdown("**🎯 Key Insights:**")
+                        
+                        # Find most connected missing entities
+                        missing_connections = {}
+                        for edge in relationships['edges']:
+                            if edge['type'] == 'primary_to_missing':
+                                target = edge['target']
+                                if target not in missing_connections:
+                                    missing_connections[target] = []
+                                missing_connections[target].append(edge['weight'])
+                        
+                        if missing_connections:
+                            # Find missing entity with strongest connections
+                            best_connected = max(missing_connections.items(), 
+                                               key=lambda x: (len(x[1]), max(x[1])))
+                            entity_id = best_connected[0]
+                            entity_name = next(e['name'] for e in relationships['missing_entities'] 
+                                             if e['id'] == entity_id)
+                            
+                            st.success(f"**Most Connected Missing Entity:** {entity_name} "
+                                     f"({len(best_connected[1])} connections, max similarity: {max(best_connected[1]):.3f})")
+                        
+                        # Find query-relevant missing entities
+                        query_missing_edges = [e for e in relationships['edges'] if e['type'] == 'query_to_missing']
+                        if query_missing_edges:
+                            best_query_edge = max(query_missing_edges, key=lambda x: x['weight'])
+                            target_id = best_query_edge['target']
+                            entity_name = next(e['name'] for e in relationships['missing_entities'] 
+                                             if e['id'] == target_id)
+                            
+                            st.info(f"**Most Query-Relevant Missing Entity:** {entity_name} "
+                                   f"(similarity to query: {best_query_edge['weight']:.3f})")
+                else:
+                    st.warning("Could not generate entity relationship graph. Please check if entities were extracted successfully.")
             else:
-                st.warning("Could not generate entity relationship graph. Please check if entities were extracted successfully.")
+                st.warning("No entities match the selected filters. Please adjust your filter settings.")
         
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
@@ -1279,6 +1367,6 @@ if st.session_state.entity_analysis_results:
 
 # Footer
 st.sidebar.divider()
-st.sidebar.info("🎯 Entity Gap Analysis Tool v2.0")
+st.sidebar.info("🎯 Entity Gap Analysis Tool v2.1")
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Created by [The SEO Consultant.ai](https://theseoconsultant.ai/)**")
