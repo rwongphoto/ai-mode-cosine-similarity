@@ -481,6 +481,23 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
     
     # Query node (center, large, gold)
     query_connections = len([e for e in edges if 'query' in e['source'] or 'query' in e['target']])
+    
+    # Find query connections for hover
+    query_connected_entities = []
+    for edge in edges:
+        if edge['source'] == 'query':
+            target_entity = next((e for e in missing_entities + primary_entities if e['id'] == edge['target']), None)
+            if target_entity:
+                entity_type = "Missing" if target_entity in missing_entities else "Your Content"
+                query_connected_entities.append(f"→ {target_entity['name']} ({entity_type}, {edge['weight']:.3f})")
+        elif edge['target'] == 'query':
+            source_entity = next((e for e in missing_entities + primary_entities if e['id'] == edge['source']), None)
+            if source_entity:
+                entity_type = "Missing" if source_entity in missing_entities else "Your Content"
+                query_connected_entities.append(f"← {source_entity['name']} ({entity_type}, {edge['weight']:.3f})")
+    
+    query_connections_text = "<br>".join(query_connected_entities) if query_connected_entities else "No connections above threshold"
+    
     query_trace = go.Scatter(
         x=[0], y=[0],
         mode='markers+text',
@@ -489,7 +506,7 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
         textposition="middle center",
         textfont=dict(size=16, color='black'),
         name="Target Query",
-        hovertemplate=f"<b>Target Query</b><br>{query_entity}<br><br>Connected to: {query_connections} entities<extra></extra>",
+        hovertemplate=f"<b>Target Query</b><br>{query_entity}<br><br><b>Connected to {query_connections} entities:</b><br>{query_connections_text}<extra></extra>",
         showlegend=True
     )
     node_traces.append(query_trace)
@@ -516,8 +533,28 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
             
             missing_text.append(f"{icon}")
             
-            # Count connections for this entity
-            entity_connections = len([e for e in edges if entity['id'] in [e['source'], e['target']]])
+            # Find all connections for this entity with details
+            entity_connections = []
+            connection_count = 0
+            for edge in edges:
+                if edge['source'] == entity['id']:
+                    if edge['target'] == 'query':
+                        entity_connections.append(f"→ Query: {query_entity} ({edge['weight']:.3f})")
+                    else:
+                        target_entity = next((e for e in primary_entities if e['id'] == edge['target']), None)
+                        if target_entity:
+                            entity_connections.append(f"→ {target_entity['name']} (Your Content, {edge['weight']:.3f})")
+                    connection_count += 1
+                elif edge['target'] == entity['id']:
+                    if edge['source'] == 'query':
+                        entity_connections.append(f"← Query: {query_entity} ({edge['weight']:.3f})")
+                    else:
+                        source_entity = next((e for e in primary_entities if e['id'] == edge['source']), None)
+                        if source_entity:
+                            entity_connections.append(f"← {source_entity['name']} (Your Content, {edge['weight']:.3f})")
+                    connection_count += 1
+            
+            connections_text = "<br>".join(entity_connections) if entity_connections else "No connections above threshold"
             
             # Enhanced hover info
             missing_hover.append(
@@ -526,7 +563,8 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
                 f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
                 f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
                 f"Status: Missing from your content<br>"
-                f"Connections: {entity_connections}"
+                f"Found on {entity.get('salience', 0):.3f} competitor sites<br>"
+                f"<br><b>Connected to {connection_count} entities:</b><br>{connections_text}"
             )
         
         missing_trace = go.Scatter(
@@ -554,8 +592,28 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
         for entity in primary_entities:
             primary_text.append("✅")
             
-            # Count connections for this entity
-            entity_connections = len([e for e in edges if entity['id'] in [e['source'], e['target']]])
+            # Find all connections for this entity with details
+            entity_connections = []
+            connection_count = 0
+            for edge in edges:
+                if edge['source'] == entity['id']:
+                    if edge['target'] == 'query':
+                        entity_connections.append(f"→ Query: {query_entity} ({edge['weight']:.3f})")
+                    else:
+                        target_entity = next((e for e in missing_entities if e['id'] == edge['target']), None)
+                        if target_entity:
+                            entity_connections.append(f"→ {target_entity['name']} (Missing, {edge['weight']:.3f})")
+                    connection_count += 1
+                elif edge['target'] == entity['id']:
+                    if edge['source'] == 'query':
+                        entity_connections.append(f"← Query: {query_entity} ({edge['weight']:.3f})")
+                    else:
+                        source_entity = next((e for e in missing_entities if e['id'] == edge['source']), None)
+                        if source_entity:
+                            entity_connections.append(f"← {source_entity['name']} (Missing, {edge['weight']:.3f})")
+                    connection_count += 1
+            
+            connections_text = "<br>".join(entity_connections) if entity_connections else "No connections above threshold"
             
             # Enhanced hover info
             primary_hover.append(
@@ -564,7 +622,8 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
                 f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
                 f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
                 f"Status: In your content<br>"
-                f"Connections: {entity_connections}"
+                f"Document Salience: {entity.get('salience', 0):.3f}<br>"
+                f"<br><b>Connected to {connection_count} entities:</b><br>{connections_text}"
             )
         
         primary_trace = go.Scatter(
