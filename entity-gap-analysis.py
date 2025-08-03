@@ -383,7 +383,7 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
     node_sizes = []
     node_info = []
     
-    # Add query node
+    # Add query node with connections
     if 'query' in pos:
         qx, qy = pos['query']
         node_x.append(qx)
@@ -391,7 +391,25 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
         node_text.append(f"🎯 {relationships['query_entity']}")
         node_colors.append('gold')
         node_sizes.append(25)
-        node_info.append(f"<b>Target Query</b><br>{relationships['query_entity']}")
+        
+        # Find query connections
+        query_connections = []
+        for edge in relationships['edges']:
+            if edge['source'] == 'query':
+                target_entity = next((e for e in all_entities if e['id'] == edge['target']), None)
+                if target_entity:
+                    query_connections.append(f"→ {target_entity['name']} ({edge['weight']:.3f})")
+            elif edge['target'] == 'query':
+                source_entity = next((e for e in all_entities if e['id'] == edge['source']), None)
+                if source_entity:
+                    query_connections.append(f"← {source_entity['name']} ({edge['weight']:.3f})")
+        
+        connections_text = "<br>".join(query_connections) if query_connections else "No connections above threshold"
+        node_info.append(
+            f"<b>Target Query</b><br>"
+            f"{relationships['query_entity']}<br>"
+            f"<br><b>Connected to:</b><br>{connections_text}"
+        )
     
     # Add entity nodes
     for entity in all_entities:
@@ -399,6 +417,26 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
             x, y = pos[entity['id']]
             node_x.append(x)
             node_y.append(y)
+            
+            # Find all connections for this entity
+            connections = []
+            for edge in relationships['edges']:
+                if edge['source'] == entity['id']:
+                    # Find target entity name
+                    if edge['target'] == 'query':
+                        connections.append(f"🎯 {relationships['query_entity']} ({edge['weight']:.3f})")
+                    else:
+                        target_entity = next((e for e in all_entities if e['id'] == edge['target']), None)
+                        if target_entity:
+                            connections.append(f"→ {target_entity['name']} ({edge['weight']:.3f})")
+                elif edge['target'] == entity['id']:
+                    # Find source entity name
+                    if edge['source'] == 'query':
+                        connections.append(f"🎯 {relationships['query_entity']} ({edge['weight']:.3f})")
+                    else:
+                        source_entity = next((e for e in all_entities if e['id'] == edge['source']), None)
+                        if source_entity:
+                            connections.append(f"← {source_entity['name']} ({edge['weight']:.3f})")
             
             # Node styling based on type and selection
             if entity['node_type'] == 'primary':
@@ -424,13 +462,15 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
             node_colors.append(color)
             node_sizes.append(size)
             
-            # Hover info
+            # Enhanced hover info with connections
+            connections_text = "<br>".join(connections) if connections else "No connections above threshold"
             node_info.append(
                 f"<b>{entity['name']}</b><br>"
                 f"Type: {entity['type']}<br>"
                 f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
                 f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
-                f"Status: {'In Your Content' if entity['node_type'] == 'primary' else 'Missing (Competitor)'}"
+                f"Status: {'In Your Content' if entity['node_type'] == 'primary' else 'Missing (Competitor)'}<br>"
+                f"<br><b>Connected to:</b><br>{connections_text}"
             )
     
     # Create node trace
