@@ -540,6 +540,27 @@ def split_text_into_passages(text, passage_length=200):
     
     return passages
 
+def find_entity_best_passage(entity_name, passages, model):
+    """Find the passage where the entity has highest semantic relevance."""
+    if not passages or not model:
+        return {"passage": "", "similarity": 0.0, "index": -1}
+    
+    try:
+        entity_embedding = model.encode([entity_name])
+        passage_embeddings = model.encode(passages)
+        
+        similarities = cosine_similarity(entity_embedding, passage_embeddings)[0]
+        best_idx = np.argmax(similarities)
+        
+        return {
+            "passage": passages[best_idx],
+            "similarity": float(similarities[best_idx]),
+            "index": int(best_idx)
+        }
+    except Exception as e:
+        st.warning(f"Failed to find best passage for '{entity_name}': {e}")
+        return {"passage": "", "similarity": 0.0, "index": -1}
+
 def generate_semantic_implementation_analysis(entity_name, primary_content, best_passage, target_query, entity_info):
     """Generate Gemini-powered analysis for implementing missing entities."""
     
