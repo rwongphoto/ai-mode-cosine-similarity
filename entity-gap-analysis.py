@@ -220,6 +220,10 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
     if not embedding_model:
         return {}
     
+    # Filter to top entities only for cleaner graph
+    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:15]  # Top 15 primary
+    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:10]   # Top 10 missing
+    
     relationships = {
         'primary_entities': [],
         'missing_entities': [],
@@ -229,8 +233,8 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
     
     try:
         # Prepare entity lists
-        primary_names = [entity['Entity'] for entity in primary_entities]
-        missing_names = [entity['Entity'] for entity in missing_entities]
+        primary_names = [entity['Entity'] for entity in top_primary]
+        missing_names = [entity['Entity'] for entity in top_missing]
         all_entity_names = primary_names + missing_names + [target_query]
         
         # Calculate embeddings for all entities
@@ -243,7 +247,7 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
         similarity_matrix = cosine_similarity(entity_embeddings)
         
         # Add primary entities to graph
-        for i, entity in enumerate(primary_entities):
+        for i, entity in enumerate(top_primary):
             relationships['primary_entities'].append({
                 'id': f"primary_{i}",
                 'name': entity['Entity'],
@@ -255,7 +259,7 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
             })
         
         # Add missing entities to graph
-        for i, entity in enumerate(missing_entities):
+        for i, entity in enumerate(top_missing):
             relationships['missing_entities'].append({
                 'id': f"missing_{i}",
                 'name': entity['Entity'],
@@ -266,13 +270,13 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                 'node_type': 'missing'
             })
         
-        # Calculate edges (relationships) with similarity threshold
-        similarity_threshold = 0.3  # Only show meaningful relationships
+        # Calculate edges with higher similarity threshold for cleaner graph
+        similarity_threshold = 0.4  # Increased threshold for fewer connections
         
         # Primary to missing entity relationships
-        for i, primary_entity in enumerate(primary_entities):
+        for i, primary_entity in enumerate(top_primary):
             primary_idx = i
-            for j, missing_entity in enumerate(missing_entities):
+            for j, missing_entity in enumerate(top_missing):
                 missing_idx = len(primary_names) + j
                 similarity = similarity_matrix[primary_idx][missing_idx]
                 
@@ -284,13 +288,14 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                         'type': 'primary_to_missing'
                     })
         
-        # Query to entity relationships
+        # Query to entity relationships with higher threshold
         query_idx = len(all_entity_names) - 1
+        query_threshold = 0.5  # Higher threshold for query connections
         
         # Query to primary entities
-        for i, primary_entity in enumerate(primary_entities):
+        for i, primary_entity in enumerate(top_primary):
             similarity = similarity_matrix[i][query_idx]
-            if similarity > similarity_threshold:
+            if similarity > query_threshold:
                 relationships['edges'].append({
                     'source': 'query',
                     'target': f"primary_{i}",
@@ -299,10 +304,10 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                 })
         
         # Query to missing entities
-        for j, missing_entity in enumerate(missing_entities):
+        for j, missing_entity in enumerate(top_missing):
             missing_idx = len(primary_names) + j
             similarity = similarity_matrix[missing_idx][query_idx]
-            if similarity > similarity_threshold:
+            if similarity > query_threshold:
                 relationships['edges'].append({
                     'source': 'query',
                     'target': f"missing_{j}",
@@ -762,15 +767,25 @@ if st.session_state.entity_analysis_results:
                         }
                     competitor_entities[entity_key]['found_on'].append(url)
         
-        # Calculate entity gaps
+        # Calculate entity gaps with better matching
         primary_entity_keys = set(primary_entities.keys())
+        primary_entity_names = {entity_data['name'].lower() for entity_data in primary_entities.values()}
         missing_entities = []
         
         for entity_key, comp_data in competitor_entities.items():
-            if entity_key not in primary_entity_keys:
+            entity_name = comp_data['data']['name']
+            entity_name_lower = entity_name.lower()
+            
+            # Check both exact key match and name similarity
+            is_missing = (entity_key not in primary_entity_keys and 
+                         entity_name_lower not in primary_entity_names and
+                         not any(entity_name_lower in primary_name or primary_name in entity_name_lower 
+                                for primary_name in primary_entity_names))
+            
+            if is_missing:
                 # Calculate query relevance
                 query_similarity = calculate_entity_query_relevance(
-                    comp_data['data']['name'], 
+                    entity_name, 
                     target_query, 
                     st.session_state.embedding_model
                 )
@@ -778,15 +793,17 @@ if st.session_state.entity_analysis_results:
                 # Calculate combined score
                 combined_score = (comp_data['data']['salience'] + query_similarity) / 2
                 
-                missing_entities.append({
-                    'Entity': comp_data['data']['name'],
-                    'Type': comp_data['data']['type'],
-                    'Document Salience': comp_data['data']['salience'],
-                    'Query Relevance': query_similarity,
-                    'Combined Score': combined_score,
-                    'Found On': len(comp_data['found_on']),
-                    'URLs': ', '.join([f"`{url.split('//')[-1].split('/')[0]}`" for url in comp_data['found_on'][:2]])
-                })
+                # Only include entities with meaningful scores
+                if combined_score > 0.15:  # Filter out very low relevance entities
+                    missing_entities.append({
+                        'Entity': entity_name,
+                        'Type': comp_data['data']['type'],
+                        'Document Salience': comp_data['data']['salience'],
+                        'Query Relevance': query_similarity,
+                        'Combined Score': combined_score,
+                        'Found On': len(comp_data['found_on']),
+                        'URLs': ', '.join([f"`{url.split('//')[-1].split('/')[0]}`" for url in comp_data['found_on'][:2]])
+                    })
         
         # Display gaps
         if missing_entities:
