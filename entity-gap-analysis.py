@@ -35,6 +35,8 @@ if "entity_analysis_results" not in st.session_state: st.session_state.entity_an
 if "content_passages" not in st.session_state: st.session_state.content_passages = None
 if "embedding_model" not in st.session_state: st.session_state.embedding_model = None
 if "entity_relationships" not in st.session_state: st.session_state.entity_relationships = None
+if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_configured = False
+if "gemini_api_key_to_persist" not in st.session_state: st.session_state.gemini_api_key_to_persist = ""
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -221,9 +223,9 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
     if not embedding_model:
         return {}
     
-    # Show top 25 entities for each category
-    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:25]  # Top 25 primary
-    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:25]   # Top 25 missing
+    # Filter to top entities for cleaner, more readable graph
+    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:15]  # Top 15 primary
+    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:10]   # Top 10 missing
     
     relationships = {
         'primary_entities': [],
@@ -271,8 +273,8 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                 'node_type': 'missing'
             })
         
-        # Calculate edges with moderate similarity threshold
-        similarity_threshold = 0.35  # Slightly lower threshold for more connections
+        # Calculate edges with higher similarity thresholds for cleaner graph
+        similarity_threshold = 0.4  # Higher threshold for fewer, stronger connections
         
         # Primary to missing entity relationships
         for i, primary_entity in enumerate(top_primary):
@@ -289,9 +291,9 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                         'type': 'primary_to_missing'
                     })
         
-        # Query to entity relationships with moderate threshold
+        # Query to entity relationships with higher threshold
         query_idx = len(all_entity_names) - 1
-        query_threshold = 0.4  # Moderate threshold for query connections
+        query_threshold = 0.5  # Higher threshold for query connections
         
         # Query to primary entities
         for i, primary_entity in enumerate(top_primary):
@@ -1106,12 +1108,12 @@ if st.session_state.entity_analysis_results:
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
             st.subheader("📍 Where to Add Missing Entities in Your Content")
-            st.markdown("_Analyze the top 25 missing entities and find optimal insertion locations_")
+            st.markdown("_Select from all missing entities to find optimal insertion locations_")
             
             passages = st.session_state.content_passages[primary_url]
             
-            # Show top 25 missing entities sorted by query relevance
-            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)[:25]
+            # Sort missing entities by query relevance (show all, not just top 25)
+            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
             
             # Entity selection dropdown
             entity_options = []
@@ -1130,7 +1132,7 @@ if st.session_state.entity_analysis_results:
                 "🔍 Select missing entity to analyze:",
                 options=[""] + entity_options,
                 index=0,
-                help=f"Showing top 25 missing entities sorted by Query Relevance (highest first)."
+                help=f"All {len(sorted_missing)} missing entities sorted by Query Relevance (highest first)."
             )
             
             if selected_entity_display and selected_entity_display != "":
