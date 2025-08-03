@@ -221,8 +221,8 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
         return {}
     
     # Filter to top entities only for cleaner graph
-    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:15]  # Top 15 primary
-    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:10]   # Top 10 missing
+    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:25]  # Top 25 primary
+    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:25]   # Top 25 missing
     
     relationships = {
         'primary_entities': [],
