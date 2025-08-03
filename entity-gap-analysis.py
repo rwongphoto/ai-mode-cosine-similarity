@@ -116,6 +116,7 @@ else:
     st.sidebar.markdown("⚠️ Google NLP API: **Required - Not Configured**")
 
 st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**")
+st.sidebar.markdown(f"🤖 Gemini API: **{'Configured' if st.session_state.get('gemini_api_configured', False) else 'Optional - Not Configured'}**")
 
 # --- Core Functions ---
 def is_number_entity(entity_name):
@@ -220,7 +221,7 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
     if not embedding_model:
         return {}
     
-    # Filter to top entities only for cleaner graph
+    # Show top 25 entities for each category
     top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:25]  # Top 25 primary
     top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:25]   # Top 25 missing
     
@@ -270,8 +271,8 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                 'node_type': 'missing'
             })
         
-        # Calculate edges with higher similarity threshold for cleaner graph
-        similarity_threshold = 0.4  # Increased threshold for fewer connections
+        # Calculate edges with moderate similarity threshold
+        similarity_threshold = 0.35  # Slightly lower threshold for more connections
         
         # Primary to missing entity relationships
         for i, primary_entity in enumerate(top_primary):
@@ -288,9 +289,9 @@ def calculate_entity_relationships(primary_entities, missing_entities, embedding
                         'type': 'primary_to_missing'
                     })
         
-        # Query to entity relationships with higher threshold
+        # Query to entity relationships with moderate threshold
         query_idx = len(all_entity_names) - 1
-        query_threshold = 0.5  # Higher threshold for query connections
+        query_threshold = 0.4  # Moderate threshold for query connections
         
         # Query to primary entities
         for i, primary_entity in enumerate(top_primary):
@@ -539,7 +540,79 @@ def split_text_into_passages(text, passage_length=200):
     
     return passages
 
-def find_entity_best_passage(entity_name, passages, model):
+def generate_semantic_implementation_analysis(entity_name, primary_content, best_passage, target_query, entity_info):
+    """Generate Gemini-powered analysis for implementing missing entities."""
+    
+    if not st.session_state.get('gemini_api_configured', False):
+        return None
+    
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
+        model = genai.GenerativeModel("gemini-2.5-pro")
+        
+        # Analyze content tone and style
+        tone_analysis_prompt = f"""
+        Analyze the writing tone, style, and voice of this content sample:
+        
+        "{primary_content[:2000]}"
+        
+        Provide a brief analysis of:
+        1. Writing tone (formal/informal, technical/accessible, etc.)
+        2. Style characteristics (sentence structure, vocabulary level, etc.)
+        3. Target audience level
+        
+        Keep your analysis concise and focused on actionable style guidelines.
+        """
+        
+        tone_response = model.generate_content(tone_analysis_prompt)
+        tone_analysis = tone_response.text.strip()
+        
+        # Generate implementation strategy
+        implementation_prompt = f"""
+        Based on this content analysis and the target query "{target_query}", provide strategic recommendations for implementing the entity "{entity_name}" into the content.
+        
+        CONTENT TONE ANALYSIS:
+        {tone_analysis}
+        
+        ENTITY TO IMPLEMENT: {entity_name}
+        - Type: {entity_info.get('Type', 'Unknown')}
+        - Query Relevance: {entity_info.get('Query Relevance', 0):.3f}
+        - Found on {entity_info.get('Found On', 0)} competitor sites
+        
+        BEST INSERTION LOCATION:
+        "{best_passage}"
+        
+        CURRENT CONTENT SAMPLE:
+        "{primary_content[:1500]}"
+        
+        Provide a strategic analysis with:
+        
+        ## WHY Implement This Entity
+        - Strategic value for the target query
+        - SEO and content gap benefits
+        - User value proposition
+        
+        ## WHERE to Implement
+        - Specific section recommendations
+        - Integration with existing content flow
+        - Placement strategy for maximum impact
+        
+        ## HOW to Implement
+        - 2-3 specific, actionable content additions
+        - Maintain the identified tone and style
+        - Natural integration techniques
+        - Suggested word count and depth
+        
+        Keep recommendations practical, specific, and aligned with the content's existing voice. Focus on seamless integration rather than forced insertion.
+        """
+        
+        implementation_response = model.generate_content(implementation_prompt)
+        return implementation_response.text.strip()
+        
+    except Exception as e:
+        st.error(f"Gemini analysis failed: {e}")
+        return None
     """Find the passage where the entity has highest semantic relevance."""
     if not passages or not model:
         return {"passage": "", "similarity": 0.0, "index": -1}
@@ -1012,9 +1085,12 @@ if st.session_state.entity_analysis_results:
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
             st.subheader("📍 Where to Add Missing Entities in Your Content")
+            st.markdown("_Analyze the top 25 missing entities and find optimal insertion locations_")
             
             passages = st.session_state.content_passages[primary_url]
-            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
+            
+            # Show top 25 missing entities sorted by query relevance
+            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)[:25]
             
             # Entity selection dropdown
             entity_options = []
@@ -1033,7 +1109,7 @@ if st.session_state.entity_analysis_results:
                 "🔍 Select missing entity to analyze:",
                 options=[""] + entity_options,
                 index=0,
-                help="Entities sorted by Query Relevance (highest first)."
+                help=f"Showing top 25 missing entities sorted by Query Relevance (highest first)."
             )
             
             if selected_entity_display and selected_entity_display != "":
@@ -1078,9 +1154,62 @@ if st.session_state.entity_analysis_results:
                             st.info("ℹ️ **Good insertion point**")
                         else:
                             st.warning("⚠️ **Lower relevance**")
+                            
+                        # Add Gemini semantic analysis
+                        if st.session_state.get('gemini_api_configured', False):
+                            if st.button(f"🤖 Get AI Implementation Strategy for '{entity_name}'", key=f"gemini_{entity_name.replace(' ', '_')}"):
+                                with st.spinner("Generating strategic implementation analysis..."):
+                                    # Get primary URL content for tone analysis
+                                    primary_content = ""
+                                    if primary_url in st.session_state.get('entity_analysis_results', {}):
+                                        # Reconstruct content from passages
+                                        passages = st.session_state.content_passages.get(primary_url, [])
+                                        primary_content = " ".join(passages[:5])  # First 5 passages for tone analysis
+                                    
+                                    semantic_analysis = generate_semantic_implementation_analysis(
+                                        entity_name,
+                                        primary_content,
+                                        best_passage_info["passage"],
+                                        target_query,
+                                        entity_info
+                                    )
+                                    
+                                    if semantic_analysis:
+                                        st.markdown("---")
+                                        st.markdown("### 🤖 AI Implementation Strategy")
+                                        st.markdown(semantic_analysis)
+                                    else:
+                                        st.error("Failed to generate implementation strategy.")
+                        else:
+                            st.info("💡 **Enable Gemini API** in the sidebar to get AI-powered implementation strategies that match your content tone.")
                     else:
                         st.markdown("**🤔 No strongly relevant passage found.**")
                         st.info(f"Consider adding a new section about '{entity_name}'.")
+                        
+                        # Gemini analysis for new section creation
+                        if st.session_state.get('gemini_api_configured', False):
+                            if st.button(f"🤖 Get AI Strategy for New '{entity_name}' Section", key=f"gemini_new_{entity_name.replace(' ', '_')}"):
+                                with st.spinner("Generating new section strategy..."):
+                                    # Generate strategy for creating new section
+                                    primary_content = ""
+                                    if primary_url in st.session_state.get('entity_analysis_results', {}):
+                                        passages = st.session_state.content_passages.get(primary_url, [])
+                                        primary_content = " ".join(passages[:5])
+                                    
+                                    semantic_analysis = generate_semantic_implementation_analysis(
+                                        entity_name,
+                                        primary_content,
+                                        "No existing relevant passage found - new section needed",
+                                        target_query,
+                                        entity_info
+                                    )
+                                    
+                                    if semantic_analysis:
+                                        st.markdown("---")
+                                        st.markdown("### 🤖 AI Strategy for New Section")
+                                        st.markdown(semantic_analysis)
+                                    else:
+                                        st.error("Failed to generate new section strategy.")
 
 # Footer
 st.sidebar.divider()
