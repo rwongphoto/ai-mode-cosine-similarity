@@ -448,16 +448,11 @@ def create_entity_relationship_graph(relationships, selected_missing_entity=None
     # Create figure
     fig = go.Figure(data=[edge_trace, node_trace],
                    layout=go.Layout(
-                        title=dict(
-                            text=f"Entity Relationship Graph for Primary URL",
-                            x=0.5,
-                            font=dict(size=16)
-                        ),
-                        titlefont_size=16,
+                        title=f"Entity Relationship Graph for Primary URL",
                         showlegend=False,
                         hovermode='closest',
                         margin=dict(b=20,l=5,r=5,t=40),
-                        annotations=[ dict(
+                        annotations=[dict(
                             text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity",
                             showarrow=False,
                             xref="paper", yref="paper",
