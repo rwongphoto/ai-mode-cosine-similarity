@@ -132,7 +132,7 @@ with st.sidebar.expander("Gemini API (Optional)", expanded=False):
                 # Test the Gemini API key
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key_input)
-                model = genai.GenerativeModel("gemini-1.5-pro")
+                model = genai.GenerativeModel("gemini-2.5-pro")
 
                 # Simple test to verify the API key works
                 test_response = model.generate_content("Hello, respond with 'API key works'")
