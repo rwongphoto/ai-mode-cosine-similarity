@@ -413,7 +413,7 @@ def extract_clean_text(html_content):
 
 
 # --- Main UI ---
-LOGO_URL = "https://theseoconsultant.ai/wp-content/uploads/2024/02/the-seo-consultant-logo-white-on-transparent.png"
+LOGO_URL = "https://theseoconsultant.ai/wp-content/uploads/2024/12/cropped-theseoconsultant-logo-2.jpg"
 logo_b64 = get_image_as_base64(LOGO_URL)
 create_navigation_menu(logo_b64)
 st.title("🎯 Entity Gap Analysis Tool")
