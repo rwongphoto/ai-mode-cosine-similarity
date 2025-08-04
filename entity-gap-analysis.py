@@ -22,7 +22,7 @@ import networkx as nx
 from google.cloud import language_v1
 from google.oauth2 import service_account
 
-st.set_page_config(layout="wide", page_title="Entity Gap Analysis Tool")
+st.set_page_config(layout="wide", page_title="Entity Gap Analysis Tool | The SEO Consultant.ai")
 
 # --- Session State Initialization ---
 if "processing" not in st.session_state: st.session_state.processing = False
