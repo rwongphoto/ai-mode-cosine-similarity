@@ -541,23 +541,46 @@ if st.session_state.entity_analysis_results:
                 else: st.warning("Could not generate graph. Not enough connections found.")
             else: st.warning("No entities match filters, or no content was found for the primary URL.")
 
+        # --- WHERE TO ADD MISSING ENTITIES SECTION (CORRECTED) ---
         if missing_entities and st.session_state.content_passages.get(primary_url):
-            st.markdown("---"); st.subheader("📍 Where to Add Missing Entities")
+            st.markdown("---")
+            st.subheader("📍 Where to Add Missing Entities")
             st.markdown("_Select from missing entities to find optimal insertion locations._")
-            passages = st.session_state.content_passages[primary_url]; sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
-            entity_options, entity_lookup = {}, {}
-            for entity_info in sorted_missing: display_name = f"{entity_info['Entity']} (Query Relevance: {entity_info['Query Relevance']:.3f})"; entity_options[display_name] = entity_info
-            selected_entity_display = st.selectbox("🔍 Select missing entity to analyze:",[""] + list(entity_options.keys()), 0, help=f"All {len(sorted_missing)} missing entities sorted by Query Relevance.")
+            
+            passages = st.session_state.content_passages[primary_url]
+            sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
+            
+            # FIX IS HERE: Use a single, correctly named dictionary.
+            entity_lookup = {}
+            for entity_info in sorted_missing:
+                display_name = f"{entity_info['Entity']} (Query Relevance: {entity_info['Query Relevance']:.3f})"
+                entity_lookup[display_name] = entity_info
+            
+            selected_entity_display = st.selectbox(
+                "🔍 Select missing entity to analyze:",
+                options=[""] + list(entity_lookup.keys()), # Use the keys from the lookup dict
+                index=0,
+                help=f"All {len(sorted_missing)} missing entities sorted by Query Relevance."
+            )
+
             if selected_entity_display:
-                entity_info = entity_lookup[selected_entity_display]; entity_name = entity_info['Entity']
+                # This will now work because we are looking up in the populated dictionary.
+                entity_info = entity_lookup[selected_entity_display]
+                entity_name = entity_info['Entity']
+                
                 best_passage_info = find_entity_best_passage(entity_name, passages, st.session_state.embedding_model)
                 col_a, col_b = st.columns([1, 2])
                 with col_a:
-                    st.markdown("**📊 Entity Metrics:**"); st.metric("Query Relevance", f"{entity_info['Query Relevance']:.3f}"); st.metric("Combined Score", f"{entity_info['Combined Score']:.3f}"); st.metric("Document Salience", f"{entity_info['Document Salience']:.3f}")
-                    st.markdown("**🏢 Details:**"); st.markdown(f"- **Type:** {entity_info['Type']}\n- **Found on:** {entity_info['Found On']} competitor site(s)")
+                    st.markdown("**📊 Entity Metrics:**")
+                    st.metric("Query Relevance", f"{entity_info['Query Relevance']:.3f}")
+                    st.metric("Combined Score", f"{entity_info['Combined Score']:.3f}")
+                    st.metric("Document Salience", f"{entity_info['Document Salience']:.3f}")
+                    st.markdown("**🏢 Details:**")
+                    st.markdown(f"- **Type:** {entity_info['Type']}\n- **Found on:** {entity_info['Found On']} competitor site(s)")
                 with col_b:
                     if best_passage_info["similarity"] > 0.1:
-                        st.markdown("**🎯 Recommended Insertion Location:**"); st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
+                        st.markdown("**🎯 Recommended Insertion Location:**")
+                        st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
                         st.text_area("Best passage for adding this entity:", value=best_passage_info["passage"], height=120, disabled=True, key=f"passage_add_{entity_name.replace(' ', '_')}")
                         if best_passage_info["similarity"] > 0.5: st.success("✅ **Excellent insertion point**")
                         elif best_passage_info["similarity"] > 0.3: st.info("ℹ️ **Good insertion point**")
@@ -571,7 +594,8 @@ if st.session_state.entity_analysis_results:
                                     else: st.error("Failed to generate implementation strategy.")
                         else: st.info("💡 **Enable Gemini API** to get AI-powered implementation strategies.")
                     else:
-                        st.markdown("**🤔 No strongly relevant passage found.**"); st.info(f"Consider adding a new section about '{entity_name}'.")
+                        st.markdown("**🤔 No strongly relevant passage found.**")
+                        st.info(f"Consider adding a new section about '{entity_name}'.")
                         if st.session_state.get('gemini_api_configured', False):
                             if st.button(f"🤖 Get AI Strategy for New '{entity_name}' Section", key=f"gemini_new_{entity_name.replace(' ', '_')}"):
                                 with st.spinner("Generating new section strategy..."):
