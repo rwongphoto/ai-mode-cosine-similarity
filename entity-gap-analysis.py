@@ -969,6 +969,31 @@ if st.session_state.entity_analysis_results:
         primary_df = pd.DataFrame(primary_entity_analysis)
         primary_df = primary_df.sort_values('Combined Score', ascending=False)
 
+        st.dataframe(
+            primary_df,
+            use_container_width=True,
+            column_config={
+                "Document Salience": st.column_config.ProgressColumn(
+                    "Document Salience",
+                    format="%.3f",
+                    min_value=0,
+                    max_value=1,
+                ),
+                "Query Relevance": st.column_config.ProgressColumn(
+                    "Query Relevance",
+                    format="%.3f",
+                    min_value=0,
+                    max_value=1,
+                ),
+                "Combined Score": st.column_config.ProgressColumn(
+                    "Combined Score",
+                    format="%.3f",
+                    min_value=0,
+                    max_value=1,
+                ),
+            }
+        )
+
         # Interactive Entity Relationship Graph with Enhanced Controls
         if primary_entity_analysis and missing_entities:
             st.markdown("---")
