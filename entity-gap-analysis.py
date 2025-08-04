@@ -55,14 +55,14 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
 ]
 
-def get_random_user_agent(): 
+def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
 def enforce_rate_limit():
     global last_request_time
     now = time.time()
     elapsed = now - last_request_time
-    if elapsed < REQUEST_INTERVAL: 
+    if elapsed < REQUEST_INTERVAL:
         time.sleep(REQUEST_INTERVAL - elapsed)
     last_request_time = time.time()
 
@@ -119,24 +119,24 @@ with st.sidebar.expander("Zyte API (Optional)", expanded=False):
 
 with st.sidebar.expander("Gemini API (Optional)", expanded=False):
     gemini_api_key_input = st.text_input(
-        "Enter Gemini API Key:", 
-        type="password", 
-        value=st.session_state.get("gemini_api_key_to_persist", ""), 
+        "Enter Gemini API Key:",
+        type="password",
+        value=st.session_state.get("gemini_api_key_to_persist", ""),
         disabled=st.session_state.processing,
         help="Required for AI-powered implementation strategies and content analysis"
     )
-    
+
     if st.button("Set & Verify Gemini Key", disabled=st.session_state.processing):
         if gemini_api_key_input:
             try:
                 # Test the Gemini API key
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key_input)
-                model = genai.GenerativeModel("gemini-2.5-pro")
-                
+                model = genai.GenerativeModel("gemini-1.5-pro")
+
                 # Simple test to verify the API key works
                 test_response = model.generate_content("Hello, respond with 'API key works'")
-                
+
                 if test_response and test_response.text:
                     st.session_state.gemini_api_key_to_persist = gemini_api_key_input
                     st.session_state.gemini_api_configured = True
@@ -145,13 +145,13 @@ with st.sidebar.expander("Gemini API (Optional)", expanded=False):
                 else:
                     st.session_state.gemini_api_configured = False
                     st.error("Gemini API Key verification failed - no response received")
-                    
+
             except Exception as e:
                 st.session_state.gemini_api_configured = False
                 st.error(f"Gemini API Key verification failed: {str(e)}")
         else:
             st.warning("Please enter a Gemini API Key.")
-    
+
     # Clear key button
     if st.session_state.get('gemini_api_configured', False):
         if st.button("🗑️ Clear Gemini Key", disabled=st.session_state.processing):
@@ -161,9 +161,9 @@ with st.sidebar.expander("Gemini API (Optional)", expanded=False):
             st.rerun()
 
 st.sidebar.markdown("---")
-if st.session_state.get("gcp_nlp_configured"): 
+if st.session_state.get("gcp_nlp_configured"):
     st.sidebar.markdown("✅ Google NLP API: **Required - Configured**")
-else: 
+else:
     st.sidebar.markdown("⚠️ Google NLP API: **Required - Not Configured**")
 
 st.sidebar.markdown(f"🔧 Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Optional - Not Configured'}**")
@@ -174,33 +174,33 @@ def is_number_entity(entity_name):
     """Check if an entity is primarily numeric and should be filtered out."""
     if not entity_name:
         return True
-    
+
     # Remove common separators and whitespace
     cleaned = re.sub(r'[,\s\-\.]', '', entity_name)
-    
+
     # Check if it's purely numeric
     if cleaned.isdigit():
         return True
-    
+
     # Check if it's a percentage
     if entity_name.strip().endswith('%') and re.sub(r'[%,\s\-\.]', '', entity_name).isdigit():
         return True
-    
+
     # Check if it's a year (4 digits)
     if re.match(r'^\d{4}$', cleaned):
         return True
-    
+
     # Check if it's mostly numeric (>70% digits)
     digit_count = sum(1 for char in entity_name if char.isdigit())
     total_chars = len(re.sub(r'\s', '', entity_name))
-    
+
     if total_chars > 0 and (digit_count / total_chars) > 0.7:
         return True
-    
+
     # Filter out very short numeric-heavy entities
     if len(entity_name.strip()) <= 4 and any(char.isdigit() for char in entity_name):
         return True
-    
+
     return False
 
 @st.cache_data(show_spinner="Extracting entities...")
@@ -212,7 +212,7 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
     try:
         credentials = service_account.Credentials.from_service_account_info(_credentials_info)
         client = language_v1.LanguageServiceClient(credentials=credentials)
-        
+
         max_bytes = 900000
         text_bytes = text.encode('utf-8')
         if len(text_bytes) > max_bytes:
@@ -221,15 +221,15 @@ def extract_entities_with_google_nlp(text: str, _credentials_info: dict):
 
         document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
         response = client.analyze_entities(document=document, encoding_type=language_v1.EncodingType.UTF8)
-        
+
         entities_dict = {}
         for entity in response.entities:
             entity_name = entity.name.strip()
-            
+
             # Filter out number entities
             if is_number_entity(entity_name):
                 continue
-                
+
             key = entity_name.lower()
             if key not in entities_dict or entity.salience > entities_dict[key]['salience']:
                 entities_dict[key] = {
@@ -257,7 +257,7 @@ def calculate_entity_query_relevance(entity_name, query_text, model):
     """Calculate similarity between entity and target query."""
     if not model or not entity_name or not query_text:
         return 0.0
-    
+
     try:
         entity_embedding = model.encode([entity_name])
         query_embedding = model.encode([query_text])
@@ -267,370 +267,284 @@ def calculate_entity_query_relevance(entity_name, query_text, model):
         st.warning(f"Failed to calculate similarity for '{entity_name}': {e}")
         return 0.0
 
-def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query, similarity_threshold=0.4):
-    """Calculate relationships between primary entities and missing entities."""
-    if not embedding_model:
+def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query, primary_content_passages, similarity_threshold=0.4):
+    """Calculates relationships between entities, the query, and content sections."""
+    if not embedding_model or not primary_content_passages:
         return {}
-    
-    # Filter to top entities for cleaner, more readable graph
-    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)[:len(primary_entities)]
-    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)[:len(missing_entities)]
-    
+
+    # Filter to top entities for a cleaner graph
+    top_primary = sorted(primary_entities, key=lambda x: x['Combined Score'], reverse=True)
+    top_missing = sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)
+
     relationships = {
-        'primary_entities': [],
-        'missing_entities': [],
-        'edges': [],
-        'query_entity': target_query
+        'primary_entities': [], 'missing_entities': [], 'content_sections': [],
+        'edges': [], 'query_entity': target_query
     }
-    
+
     try:
-        # Prepare entity lists
+        # Prepare entity lists and encode everything once for efficiency
         primary_names = [entity['Entity'] for entity in top_primary]
         missing_names = [entity['Entity'] for entity in top_missing]
-        all_entity_names = primary_names + missing_names + [target_query]
+        all_entity_names = primary_names + missing_names
         
-        # Calculate embeddings for all entities
         if not all_entity_names:
-            return relationships
-            
+             return relationships
+
         entity_embeddings = embedding_model.encode(all_entity_names)
-        
-        # Calculate similarity matrix
-        similarity_matrix = cosine_similarity(entity_embeddings)
-        
-        # Add primary entities to graph
+        passage_embeddings = embedding_model.encode(primary_content_passages)
+        query_embedding = embedding_model.encode([target_query])
+
+        entity_embedding_map = {name: emb for name, emb in zip(all_entity_names, entity_embeddings)}
+
+        # This will store {passage_index: {'entities': [], 'query_similarity': 0.0}}
+        connected_passages = {}
+
+        # Connect Primary Entities to their best-fit passage
+        for i, entity in enumerate(top_primary):
+            if entity['Entity'] in entity_embedding_map:
+                sims = cosine_similarity([entity_embedding_map[entity['Entity']]], passage_embeddings)[0]
+                best_passage_idx = np.argmax(sims)
+                best_sim_score = sims[best_passage_idx]
+                if best_sim_score > similarity_threshold:
+                    if best_passage_idx not in connected_passages:
+                        connected_passages[best_passage_idx] = {'entities': [], 'query_similarity': 0.0}
+                    connected_passages[best_passage_idx]['entities'].append({'type': 'primary', 'id': f"primary_{i}", 'score': float(best_sim_score)})
+
+        # Connect Missing Entities to their best-fit passage
+        for i, entity in enumerate(top_missing):
+            if entity['Entity'] in entity_embedding_map:
+                sims = cosine_similarity([entity_embedding_map[entity['Entity']]], passage_embeddings)[0]
+                best_passage_idx = np.argmax(sims)
+                best_sim_score = sims[best_passage_idx]
+                if best_sim_score > similarity_threshold:
+                    if best_passage_idx not in connected_passages:
+                        connected_passages[best_passage_idx] = {'entities': [], 'query_similarity': 0.0}
+                    connected_passages[best_passage_idx]['entities'].append({'type': 'missing', 'id': f"missing_{i}", 'score': float(best_sim_score)})
+
+        # Connect Query to all relevant passages
+        query_passage_sims = cosine_similarity(query_embedding, passage_embeddings)[0]
+        for i, score in enumerate(query_passage_sims):
+            if score > similarity_threshold:
+                 if i not in connected_passages:
+                    connected_passages[i] = {'entities': [], 'query_similarity': 0.0}
+                 connected_passages[i]['query_similarity'] = float(score)
+
+        # Build the final graph structure (nodes and edges)
         for i, entity in enumerate(top_primary):
             relationships['primary_entities'].append({
-                'id': f"primary_{i}",
-                'name': entity['Entity'],
-                'type': entity.get('Type', 'UNKNOWN'),
-                'salience': entity.get('Document Salience', 0),
-                'query_relevance': entity.get('Query Relevance', 0),
-                'combined_score': entity.get('Combined Score', 0),
-                'node_type': 'primary'
+                'id': f"primary_{i}", 'name': entity['Entity'], 'type': entity.get('Type', 'UNKNOWN'),
+                'combined_score': entity.get('Combined Score', 0), 'node_type': 'primary'
             })
-        
-        # Add missing entities to graph
         for i, entity in enumerate(top_missing):
-            relationships['missing_entities'].append({
-                'id': f"missing_{i}",
-                'name': entity['Entity'],
-                'type': entity.get('Type', 'UNKNOWN'),
-                'salience': entity.get('Document Salience', 0),
-                'query_relevance': entity.get('Query Relevance', 0),
-                'combined_score': entity.get('Combined Score', 0),
-                'node_type': 'missing'
+             relationships['missing_entities'].append({
+                'id': f"missing_{i}", 'name': entity['Entity'], 'type': entity.get('Type', 'UNKNOWN'),
+                'combined_score': entity.get('Combined Score', 0), 'node_type': 'missing'
             })
-        
-        # Calculate edges with configurable similarity threshold
-        # Primary to missing entity relationships
-        for i, primary_entity in enumerate(top_primary):
-            primary_idx = i
-            for j, missing_entity in enumerate(top_missing):
-                missing_idx = len(primary_names) + j
-                similarity = similarity_matrix[primary_idx][missing_idx]
-                
-                if similarity > similarity_threshold:
-                    relationships['edges'].append({
-                        'source': f"primary_{i}",
-                        'target': f"missing_{j}",
-                        'weight': float(similarity),
-                        'type': 'primary_to_missing'
-                    })
 
-        # Primary to primary entity relationships (the missing piece!)
-        for i in range(len(top_primary)):
-            for j in range(i + 1, len(top_primary)):  # Avoid duplicate edges and self-loops
-                primary_idx_i = i
-                primary_idx_j = j
-                similarity = similarity_matrix[primary_idx_i][primary_idx_j]
-        
-                if similarity > similarity_threshold:
-                    relationships['edges'].append({
-                        'source': f"primary_{i}",
-                        'target': f"primary_{j}",
-                        'weight': float(similarity),
-                        'type': 'primary_to_primary'
-                    })
+        for passage_idx, connections in connected_passages.items():
+            section_id = f"section_{passage_idx}"
+            relationships['content_sections'].append({
+                'id': section_id, 'name': f"Section {passage_idx + 1}",
+                'text': primary_content_passages[passage_idx], 'node_type': 'section',
+                'connection_count': len(connections['entities'])
+            })
+            for entity_connection in connections['entities']:
+                relationships['edges'].append({
+                    'source': entity_connection['id'], 'target': section_id,
+                    'weight': entity_connection['score'], 'type': 'entity_to_section'
+                })
+            if connections['query_similarity'] > similarity_threshold:
+                 relationships['edges'].append({
+                    'source': 'query', 'target': section_id,
+                    'weight': connections['query_similarity'], 'type': 'query_to_section'
+                })
 
-        # Missing to missing entity relationships (optional - shows competitor content structure)
-        for i in range(len(top_missing)):
-            for j in range(i + 1, len(top_missing)):
-                missing_idx_i = len(primary_names) + i
-                missing_idx_j = len(primary_names) + j
-                similarity = similarity_matrix[missing_idx_i][missing_idx_j]
-        
-                if similarity > similarity_threshold:
-                    relationships['edges'].append({
-                        'source': f"missing_{i}",
-                        'target': f"missing_{j}",
-                        'weight': float(similarity),
-                        'type': 'missing_to_missing'
-                    })
-        
-        # Query to entity relationships with higher threshold
-        query_idx = len(all_entity_names) - 1
-        query_threshold = max(similarity_threshold + 0.1, 0.5)  # Slightly higher threshold for query connections
-        
-        # Query to primary entities
-        for i, primary_entity in enumerate(top_primary):
-            similarity = similarity_matrix[i][query_idx]
-            if similarity > query_threshold:
+        # Add query-to-entity edges
+        query_entity_sims = cosine_similarity(query_embedding, entity_embeddings)[0]
+        query_threshold = max(similarity_threshold, 0.5)
+        all_entities_with_ids = relationships['primary_entities'] + relationships['missing_entities']
+        for i, entity in enumerate(all_entities_with_ids):
+            sim_score = query_entity_sims[i]
+            if sim_score > query_threshold:
                 relationships['edges'].append({
-                    'source': 'query',
-                    'target': f"primary_{i}",
-                    'weight': float(similarity),
-                    'type': 'query_to_primary'
+                    'source': 'query', 'target': entity['id'],
+                    'weight': float(sim_score), 'type': 'query_to_entity'
                 })
-        
-        # Query to missing entities
-        for j, missing_entity in enumerate(top_missing):
-            missing_idx = len(primary_names) + j
-            similarity = similarity_matrix[missing_idx][query_idx]
-            if similarity > query_threshold:
-                relationships['edges'].append({
-                    'source': 'query',
-                    'target': f"missing_{j}",
-                    'weight': float(similarity),
-                    'type': 'query_to_missing'
-                })
-        
+
         return relationships
-        
+
     except Exception as e:
         st.error(f"Error calculating entity relationships: {e}")
-        return relationships
+        return {}
 
 def create_entity_relationship_graph(relationships, selected_missing_entity=None):
-    """Create an interactive entity relationship graph using Plotly."""
-    
-    if not relationships or (not relationships['primary_entities'] and not relationships['missing_entities']):
+    """Create an interactive entity-to-content-section graph using Plotly."""
+    if not relationships or (not relationships.get('primary_entities') and not relationships.get('missing_entities') and not relationships.get('content_sections')):
         return None
-    
-    # Create NetworkX graph for layout calculation
+
     G = nx.Graph()
-    
-    # Add nodes
-    all_entities = relationships['primary_entities'] + relationships['missing_entities']
-    
-    # Add query node
-    G.add_node('query', node_type='query')
-    
-    for entity in all_entities:
-        G.add_node(entity['id'], **entity)
-    
+
+    # Add all nodes to the graph
+    all_nodes = relationships['primary_entities'] + relationships['missing_entities'] + relationships['content_sections']
+    G.add_node('query', node_type='query', name=relationships['query_entity'])
+    for node in all_nodes:
+        G.add_node(node['id'], **node)
+
     # Add edges
-    for edge in relationships['edges']:
-        G.add_edge(edge['source'], edge['target'], weight=edge['weight'])
-    
+    for edge in relationships.get('edges', []):
+        if G.has_node(edge['source']) and G.has_node(edge['target']):
+            G.add_edge(edge['source'], edge['target'], weight=edge['weight'])
+
     # Calculate layout
     try:
-        pos = nx.spring_layout(G, k=3, iterations=50, seed=42)
-    except:
-        # Fallback to circular layout if spring layout fails
+        k_val = 3 / np.sqrt(G.order()) if G.order() > 1 else 1.0
+        pos = nx.spring_layout(G, k=k_val, iterations=75, seed=42)
+    except Exception as e:
+        st.warning(f"Spring layout failed ({e}), falling back to circular.")
         pos = nx.circular_layout(G)
-    
-    # Prepare data for Plotly
-    edge_x = []
-    edge_y = []
-    edge_info = []
-    
-    for edge in relationships['edges']:
-        source = edge['source']
-        target = edge['target']
-        
-        if source in pos and target in pos:
-            x0, y0 = pos[source]
-            x1, y1 = pos[target]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
 
-            # Enhanced edge info with relationship type
-            edge_type = edge.get('type', 'unknown')
-            if edge_type == 'primary_to_primary':
-                edge_info.append(f"{source} ↔ {target}<br>Your Content Connection<br>Similarity: {edge['weight']:.3f}")
-            elif edge_type == 'missing_to_missing':
-                edge_info.append(f"{source} ↔ {target}<br>Competitor Content Connection<br>Similarity: {edge['weight']:.3f}")
-            else:
-                edge_info.append(f"{source} → {target}<br>Similarity: {edge['weight']:.3f}")
-    
-    # Create edge trace
+    # Prepare edge trace for Plotly
+    edge_x, edge_y = [], []
+    for edge in G.edges():
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+
     edge_trace = go.Scatter(
         x=edge_x, y=edge_y,
         line=dict(width=1, color='rgba(125,125,125,0.5)'),
-        hoverinfo='none',
-        mode='lines',
-        showlegend=False
+        hoverinfo='none', mode='lines', showlegend=False
     )
-    
-    # Prepare node data
-    node_x = []
-    node_y = []
-    node_text = []
-    node_colors = []
-    node_sizes = []
-    node_info = []
-    
-    # Add query node with connections
-    if 'query' in pos:
-        qx, qy = pos['query']
-        node_x.append(qx)
-        node_y.append(qy)
-        node_text.append(f"🎯 {relationships['query_entity']}")
-        node_colors.append('gold')
-        node_sizes.append(25)
-        
-        # Find query connections with color coding
-        query_connections = []
-        for edge in relationships['edges']:
-            if edge['source'] == 'query':
-                target_entity = next((e for e in all_entities if e['id'] == edge['target']), None)
-                if target_entity:
-                    status_indicator = "🔵 [Your Content]" if target_entity['node_type'] == 'primary' else "🟠 [Missing]"
-                    query_connections.append(f"→ {target_entity['name']} {status_indicator} ({edge['weight']:.3f})")
-            elif edge['target'] == 'query':
-                source_entity = next((e for e in all_entities if e['id'] == edge['source']), None)
-                if source_entity:
-                    status_indicator = "🔵 [Your Content]" if source_entity['node_type'] == 'primary' else "🟠 [Missing]"
-                    query_connections.append(f"← {source_entity['name']} {status_indicator} ({edge['weight']:.3f})")
-        
-        connections_text = "<br>".join(query_connections) if query_connections else "No connections above threshold"
-        node_info.append(
-            f"<b>Target Query</b><br>"
-            f"{relationships['query_entity']}<br>"
-            f"<br><b>Connected to:</b><br>{connections_text}"
-        )
-    
-    # Add entity nodes
-    for entity in all_entities:
-        if entity['id'] in pos:
-            x, y = pos[entity['id']]
-            node_x.append(x)
-            node_y.append(y)
-            
-            # Find all connections for this entity with color coding
-            connections = []
-            for edge in relationships['edges']:
-                if edge['source'] == entity['id']:
-                    # Find target entity name with status
-                    if edge['target'] == 'query':
-                        connections.append(f"🎯 {relationships['query_entity']} [Target Query] ({edge['weight']:.3f})")
-                    else:
-                        target_entity = next((e for e in all_entities if e['id'] == edge['target']), None)
-                        if target_entity:
-                            status_indicator = "🔵 [Your Content]" if target_entity['node_type'] == 'primary' else "🟠 [Missing]"
-                            connections.append(f"→ {target_entity['name']} {status_indicator} ({edge['weight']:.3f})")
-                elif edge['target'] == entity['id']:
-                    # Find source entity name with status
-                    if edge['source'] == 'query':
-                        connections.append(f"🎯 {relationships['query_entity']} [Target Query] ({edge['weight']:.3f})")
-                    else:
-                        source_entity = next((e for e in all_entities if e['id'] == edge['source']), None)
-                        if source_entity:
-                            status_indicator = "🔵 [Your Content]" if source_entity['node_type'] == 'primary' else "🟠 [Missing]"
-                            connections.append(f"← {source_entity['name']} {status_indicator} ({edge['weight']:.3f})")
-            
-            # Node styling based on type and selection
-            if entity['node_type'] == 'primary':
-                color = 'lightblue'
-                icon = '🔵'
-                size = 15 + (entity.get('combined_score', 0) * 10)
-            else:  # missing entity
-                if selected_missing_entity and entity['name'] == selected_missing_entity:
-                    color = 'red'  # Highlight selected missing entity
-                    icon = '🔴'
-                    size = 25
-                else:
-                    color = 'orange'
-                    icon = '🟠'
-                    size = 15 + (entity.get('combined_score', 0) * 10)
-            
-            # Truncate long names for display
-            display_name = entity['name']
-            if len(display_name) > 25:
-                display_name = display_name[:22] + "..."
-            
+
+    # Prepare node traces
+    node_x, node_y, node_text, node_colors, node_sizes, node_info = [], [], [], [], [], []
+
+    for node_id, node_data in G.nodes(data=True):
+        if node_id not in pos: continue
+        x, y = pos[node_id]
+        node_x.append(x)
+        node_y.append(y)
+
+        display_name = node_data.get('name', 'Unknown')
+        if len(display_name) > 25:
+            display_name = display_name[:22] + "..."
+
+        # Base info
+        info = f"<b>{node_data.get('name', 'Unknown')}</b>"
+
+        # Node styling and detailed info
+        node_type = node_data.get('node_type')
+        if node_type == 'query':
+            color = 'gold'; icon = '🎯'
+            size = 30
+            node_text.append(f"{icon}")
+        elif node_type == 'primary':
+            color = 'lightblue'; icon = '🔵'
+            size = 15 + (node_data.get('combined_score', 0) * 15)
             node_text.append(f"{icon} {display_name}")
-            node_colors.append(color)
-            node_sizes.append(size)
+            info += f" (Your Content)<br>Type: {node_data['type']}<br>Score: {node_data.get('combined_score', 0):.3f}"
+        elif node_type == 'missing':
+            icon = '🟠'; color = 'orange'
+            if selected_missing_entity and node_data['name'] == selected_missing_entity:
+                color = 'red'; icon = '🔴'
+            size = 15 + (node_data.get('combined_score', 0) * 15)
+            node_text.append(f"{icon} {display_name}")
+            info += f" (Missing Entity)<br>Type: {node_data['type']}<br>Score: {node_data.get('combined_score', 0):.3f}"
+        elif node_type == 'section':
+            color = '#C8A2C8'; icon = '📄' # Lilac/Purple
+            size = 15 + (node_data.get('connection_count', 0) * 3)
+            node_text.append(f"{icon} {display_name}")
+            passage_snippet = node_data.get('text', '')
+            if len(passage_snippet) > 200:
+                passage_snippet = passage_snippet[:197] + "..."
+            info += f"<br><i>Passage Snippet:</i><br>...{passage_snippet}..."
+        else:
+            color = 'grey'; icon = '❓'; size = 10
+            node_text.append(f"{icon} {display_name}")
+
+        # Add connection info to hover text
+        connections = []
+        for neighbor in G.neighbors(node_id):
+            neighbor_data = G.nodes[neighbor]
+            edge_weight = G.get_edge_data(node_id, neighbor)['weight']
+            n_name = neighbor_data.get('name', 'Unknown')
+            n_type = neighbor_data.get('node_type')
             
-            # Enhanced hover info with connections
-            connections_text = "<br>".join(connections) if connections else "No connections above threshold"
-            node_info.append(
-                f"<b>{entity['name']}</b><br>"
-                f"Type: {entity['type']}<br>"
-                f"Combined Score: {entity.get('combined_score', 0):.3f}<br>"
-                f"Query Relevance: {entity.get('query_relevance', 0):.3f}<br>"
-                f"Status: {'In Your Content' if entity['node_type'] == 'primary' else 'Missing (Competitor)'}<br>"
-                f"<br><b>Connected to:</b><br>{connections_text}"
-            )
-    
-    # Create node trace
+            if n_type == 'primary': n_icon = '🔵'
+            elif n_type == 'missing': n_icon = '🟠'
+            elif n_type == 'section': n_icon = '📄'
+            elif n_type == 'query': n_icon = '🎯'
+            else: n_icon = '❓'
+            connections.append(f"{n_icon} {n_name} ({edge_weight:.2f})")
+
+        connections_html = "<br>".join(sorted(connections, key=lambda x: x.split(' ')[-1], reverse=True)) if connections else "No connections"
+        info += f"<br><br><b>Connected to:</b><br>{connections_html}"
+
+        node_colors.append(color)
+        node_sizes.append(size)
+        node_info.append(info)
+
     node_trace = go.Scatter(
         x=node_x, y=node_y,
         mode='markers+text',
-        hoverinfo='text',
-        hovertext=node_info,
-        text=node_text,
-        textposition="middle center",
-        marker=dict(
-            size=node_sizes,
-            color=node_colors,
-            line=dict(width=2, color='white')
-        ),
-        textfont=dict(size=10),
-        showlegend=False
+        hoverinfo='text', hovertext=node_info,
+        text=node_text, textposition="top center",
+        marker=dict(size=node_sizes, color=node_colors, line=dict(width=2, color='white')),
+        textfont=dict(size=10, color='black'), showlegend=False
     )
-    
-    # Create figure
+
+    annotation_text = (
+        "🔵 Your Entity | 🟠 Missing Entity | 📄 Content Section | 🎯 Target Query<br>"
+        "<b>Blue/Orange → Purple:</b> Shows entity relevance to content sections. | "
+        "<b>Gold → All:</b> Shows query relevance."
+    )
+
     fig = go.Figure(data=[edge_trace, node_trace],
                    layout=go.Layout(
-                        title=f"Entity Relationship Graph for Primary URL",
-                        showlegend=False,
-                        hovermode='closest',
-                        margin=dict(b=20,l=5,r=5,t=40),
+                        title="Entity to Content Section Relationship Graph",
+                        showlegend=False, hovermode='closest',
+                        margin=dict(b=50,l=5,r=5,t=40),
                         annotations=[dict(
-                            text="🔵 Your Content | 🟠 Missing (Competitors) | 🔴 Selected Missing | 🎯 Target Query<br>Node size = Combined Score | Lines = Semantic Similarity | Hover for color-coded connections",
-                            showarrow=False,
-                            xref="paper", yref="paper",
-                            x=0.005, y=-0.002,
+                            text=annotation_text,
+                            showarrow=False, xref="paper", yref="paper",
+                            x=0.005, y=-0.06,
                             xanchor='left', yanchor='bottom',
-                            font=dict(size=10)
+                            font=dict(size=11)
                         )],
                         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                         plot_bgcolor='white'
                         ))
-    
     return fig
 
 def split_text_into_passages(text, passage_length=200):
     """Split text into passages of roughly equal length."""
     if not text:
         return []
-    
+
     words = text.split()
     passages = []
-    
+
     for i in range(0, len(words), passage_length):
         passage = ' '.join(words[i:i + passage_length])
         if passage.strip():
             passages.append(passage.strip())
-    
+
     return passages
 
 def find_entity_best_passage(entity_name, passages, model):
     """Find the passage where the entity has highest semantic relevance."""
     if not passages or not model:
         return {"passage": "", "similarity": 0.0, "index": -1}
-    
+
     try:
         entity_embedding = model.encode([entity_name])
         passage_embeddings = model.encode(passages)
-        
+
         similarities = cosine_similarity(entity_embedding, passage_embeddings)[0]
         best_idx = np.argmax(similarities)
-        
+
         return {
             "passage": passages[best_idx],
             "similarity": float(similarities[best_idx]),
@@ -642,74 +556,74 @@ def find_entity_best_passage(entity_name, passages, model):
 
 def generate_semantic_implementation_analysis(entity_name, primary_content, best_passage, target_query, entity_info):
     """Generate Gemini-powered analysis for implementing missing entities."""
-    
+
     if not st.session_state.get('gemini_api_configured', False):
         return None
-    
+
     try:
         import google.generativeai as genai
         genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
-        model = genai.GenerativeModel("gemini-2.5-pro")
-        
+        model = genai.GenerativeModel("gemini-1.5-pro")
+
         # Analyze content tone and style
         tone_analysis_prompt = f"""
         Analyze the writing tone, style, and voice of this content sample:
-        
+
         "{primary_content[:2000]}"
-        
+
         Provide a brief analysis of:
         1. Writing tone (formal/informal, technical/accessible, etc.)
         2. Style characteristics (sentence structure, vocabulary level, etc.)
         3. Target audience level
-        
+
         Keep your analysis concise and focused on actionable style guidelines.
         """
-        
+
         tone_response = model.generate_content(tone_analysis_prompt)
         tone_analysis = tone_response.text.strip()
-        
+
         # Generate implementation strategy
         implementation_prompt = f"""
         Based on this content analysis and the target query "{target_query}", provide strategic recommendations for implementing the entity "{entity_name}" into the content.
-        
+
         CONTENT TONE ANALYSIS:
         {tone_analysis}
-        
+
         ENTITY TO IMPLEMENT: {entity_name}
         - Type: {entity_info.get('Type', 'Unknown')}
         - Query Relevance: {entity_info.get('Query Relevance', 0):.3f}
         - Found on {entity_info.get('Found On', 0)} competitor sites
-        
-        BEST INSERTION LOCATION:
+
+        BEST INSERTION LOCATION (Identified by semantic analysis):
         "{best_passage}"
-        
+
         CURRENT CONTENT SAMPLE:
         "{primary_content[:1500]}"
-        
+
         Provide a strategic analysis with:
-        
-        ## WHY Implement This Entity
-        - Strategic value for the target query
-        - SEO and content gap benefits
-        - User value proposition
-        
-        ## WHERE to Implement
-        - Specific section recommendations
-        - Integration with existing content flow
-        - Placement strategy for maximum impact
-        
-        ## HOW to Implement
-        - 2-3 specific, actionable content additions
-        - Maintain the identified tone and style
-        - Natural integration techniques
-        - Suggested word count and depth
-        
+
+        ## Why Implement This Entity
+        - Strategic value for the target query "{target_query}".
+        - SEO and content gap benefits (topical authority).
+        - How it improves the user's understanding.
+
+        ## Where to Implement
+        - Recommend the best way to integrate into the suggested insertion location.
+        - Suggest how to blend it with the existing content flow.
+        - Propose placement strategy for maximum impact (e.g., as a new paragraph, a list item, or an expansion of an existing sentence).
+
+        ## How to Implement
+        - Provide 2-3 specific, actionable content addition examples (e.g., "Add a sentence like '...'").
+        - Ensure suggestions maintain the identified tone and style.
+        - Offer natural integration techniques (e.g., using transition phrases).
+        - Suggest an appropriate word count and depth for the addition.
+
         Keep recommendations practical, specific, and aligned with the content's existing voice. Focus on seamless integration rather than forced insertion.
         """
-        
+
         implementation_response = model.generate_content(implementation_prompt)
         return implementation_response.text.strip()
-        
+
     except Exception as e:
         st.error(f"Gemini analysis failed: {e}")
         return None
@@ -735,10 +649,10 @@ def fetch_content_with_zyte(url, api_key):
     if not api_key:
         st.error("Zyte API key not configured.")
         return None
-    
+
     enforce_rate_limit()
     st.write(f"_Fetching with Zyte API: {url}..._")
-    
+
     try:
         response = requests.post(
             "https://api.zyte.com/v1/extract",
@@ -747,14 +661,14 @@ def fetch_content_with_zyte(url, api_key):
             timeout=45
         )
         response.raise_for_status()
-        
+
         data = response.json()
         if data.get('httpResponseBody'):
             return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
         else:
             st.error(f"Zyte API did not return content for {url}")
             return None
-            
+
     except requests.exceptions.HTTPError as e:
         st.error(f"Zyte API HTTP Error for {url}: {e.response.status_code}")
         return None
@@ -764,7 +678,7 @@ def fetch_content_with_zyte(url, api_key):
 
 def fetch_content_with_selenium(url, driver_instance):
     """Fetch content using Selenium with proper fallback."""
-    if not driver_instance: 
+    if not driver_instance:
         return fetch_content_with_requests(url)
     try:
         enforce_rate_limit()
@@ -775,9 +689,9 @@ def fetch_content_with_selenium(url, driver_instance):
         st.error(f"Selenium fetch error for {url}: {e}")
         st.session_state.selenium_driver_instance = None
         st.warning(f"Selenium failed for {url}. Falling back to requests.")
-        try: 
+        try:
             return fetch_content_with_requests(url)
-        except Exception as req_e: 
+        except Exception as req_e:
             st.error(f"Requests fallback also failed for {url}: {req_e}")
             return None
 
@@ -797,14 +711,14 @@ def extract_clean_text(html_content):
     """Extract clean text from HTML."""
     if not html_content:
         return ""
-    
+
     soup = BeautifulSoup(html_content, 'html.parser')
-    
+
     # Remove unwanted elements
     for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']):
-        if el.name: 
+        if el.name:
             el.decompose()
-    
+
     # Get clean text
     text = soup.get_text(separator=' ')
     # Clean up whitespace
@@ -818,8 +732,8 @@ st.markdown("**Analyze entity gaps between your content and competitors, with qu
 # --- Configuration ---
 st.sidebar.subheader("📊 Analysis Configuration")
 target_query = st.sidebar.text_input(
-    "Target Search Query:", 
-    "server-side rendering benefits", 
+    "Target Search Query:",
+    "server-side rendering benefits",
     help="The search query to measure entity relevance against",
     disabled=st.session_state.processing
 )
@@ -833,7 +747,7 @@ scraping_method = st.sidebar.selectbox(
 
 st.sidebar.subheader("🔗 URL Configuration")
 primary_url = st.sidebar.text_input(
-    "Your Primary URL:", 
+    "Your Primary URL:",
     "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices",
     disabled=st.session_state.processing
 )
@@ -862,28 +776,28 @@ if st.session_state.processing:
         if not st.session_state.embedding_model:
             with st.spinner("Loading embedding model..."):
                 st.session_state.embedding_model = load_embedding_model()
-        
+
         if not st.session_state.embedding_model:
             st.error("Failed to load embedding model.")
             st.stop()
-        
+
         # Parse URLs
         competitor_url_list = [url.strip() for url in competitor_urls.split('\n') if url.strip()]
         all_urls = [primary_url] + competitor_url_list
-        
+
         # Fetch content
         url_content = {}
         url_entities = {}
-        
+
         # Initialize Selenium if needed
         if scraping_method.startswith("Selenium") and not st.session_state.selenium_driver_instance:
-            with st.spinner("Initializing Selenium WebDriver..."): 
+            with st.spinner("Initializing Selenium WebDriver..."):
                 st.session_state.selenium_driver_instance = initialize_selenium_driver()
-        
+
         with st.spinner(f"Fetching content from {len(all_urls)} URLs..."):
             for i, url in enumerate(all_urls):
                 st.write(f"Fetching {i+1}/{len(all_urls)}: {url}")
-                
+
                 # Choose fetching method
                 if scraping_method.startswith("Zyte") and st.session_state.zyte_api_configured:
                     content = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
@@ -891,7 +805,7 @@ if st.session_state.processing:
                     content = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
                 else:
                     content = fetch_content_with_requests(url)
-                
+
                 if content:
                     clean_text = extract_clean_text(content)
                     if clean_text and len(clean_text) > 100:
@@ -901,39 +815,39 @@ if st.session_state.processing:
                         st.warning(f"⚠️ Insufficient content from {url}")
                 else:
                     st.error(f"❌ Failed to fetch {url}")
-        
+
         # Clean up Selenium if used
         if st.session_state.selenium_driver_instance:
             st.session_state.selenium_driver_instance.quit()
             st.session_state.selenium_driver_instance = None
-        
+
         if not url_content:
             st.error("No content was successfully fetched. Please check your URLs and try again.")
             st.stop()
-        
+
         # Extract entities
         with st.spinner("Extracting entities from all URLs..."):
             for url, content in url_content.items():
                 st.write(f"Extracting entities from: {url}")
                 entities = extract_entities_with_google_nlp(content, st.session_state.gcp_credentials_info)
-                
+
                 if entities:
                     url_entities[url] = entities
                     st.success(f"✅ Found {len(entities)} entities")
                 else:
                     st.warning(f"⚠️ No entities extracted from {url}")
-        
+
         # Store results
         st.session_state.entity_analysis_results = url_entities
         st.session_state.content_passages = {}
-        
+
         # Split primary URL content into passages
         if primary_url in url_content:
             passages = split_text_into_passages(url_content[primary_url])
             st.session_state.content_passages[primary_url] = passages
-        
+
         st.success("✅ Entity analysis complete!")
-        
+
     finally:
         st.session_state.processing = False
         st.rerun()
@@ -942,10 +856,10 @@ if st.session_state.processing:
 if st.session_state.entity_analysis_results:
     st.markdown("---")
     st.subheader("📊 Entity Gap Analysis Results")
-    
+
     # Get primary URL entities
     primary_entities = st.session_state.entity_analysis_results.get(primary_url, {})
-    
+
     if not primary_entities:
         st.error("No entities found in primary URL.")
     else:
@@ -960,33 +874,33 @@ if st.session_state.entity_analysis_results:
                             'found_on': []
                         }
                     competitor_entities[entity_key]['found_on'].append(url)
-        
+
         # Calculate entity gaps with better matching
         primary_entity_keys = set(primary_entities.keys())
         primary_entity_names = {entity_data['name'].lower() for entity_data in primary_entities.values()}
         missing_entities = []
-        
+
         for entity_key, comp_data in competitor_entities.items():
             entity_name = comp_data['data']['name']
             entity_name_lower = entity_name.lower()
-            
+
             # Check both exact key match and name similarity
-            is_missing = (entity_key not in primary_entity_keys and 
+            is_missing = (entity_key not in primary_entity_keys and
                          entity_name_lower not in primary_entity_names and
-                         not any(entity_name_lower in primary_name or primary_name in entity_name_lower 
+                         not any(entity_name_lower in primary_name or primary_name in entity_name_lower
                                 for primary_name in primary_entity_names))
-            
+
             if is_missing:
                 # Calculate query relevance
                 query_similarity = calculate_entity_query_relevance(
-                    entity_name, 
-                    target_query, 
+                    entity_name,
+                    target_query,
                     st.session_state.embedding_model
                 )
-                
+
                 # Calculate combined score
                 combined_score = (comp_data['data']['salience'] + query_similarity) / 2
-                
+
                 # Only include entities with meaningful scores
                 if combined_score > 0.15:  # Filter out very low relevance entities
                     missing_entities.append({
@@ -998,14 +912,14 @@ if st.session_state.entity_analysis_results:
                         'Found On': len(comp_data['found_on']),
                         'URLs': ', '.join([f"`{url.split('//')[-1].split('/')[0]}`" for url in comp_data['found_on'][:2]])
                     })
-        
+
         # Display gaps
         if missing_entities:
             st.subheader("❗ Missing Entities (Found in Competitors)")
-            
+
             gap_df = pd.DataFrame(missing_entities)
             gap_df = gap_df.sort_values('Combined Score', ascending=False)
-            
+
             st.dataframe(
                 gap_df,
                 use_container_width=True,
@@ -1032,18 +946,18 @@ if st.session_state.entity_analysis_results:
             )
         else:
             st.success("✅ No entity gaps found! Your content covers all entities found in competitors.")
-        
+
         # Display primary URL entities with query relevance
         st.subheader("📋 Your Content Entities vs Target Query")
-        
+
         primary_entity_analysis = []
         for entity_key, entity_data in primary_entities.items():
             query_similarity = calculate_entity_query_relevance(
-                entity_data['name'], 
-                target_query, 
+                entity_data['name'],
+                target_query,
                 st.session_state.embedding_model
             )
-            
+
             primary_entity_analysis.append({
                 'Entity': entity_data['name'],
                 'Type': entity_data['type'],
@@ -1051,46 +965,59 @@ if st.session_state.entity_analysis_results:
                 'Query Relevance': query_similarity,
                 'Combined Score': (entity_data['salience'] + query_similarity) / 2
             })
-        
+
         primary_df = pd.DataFrame(primary_entity_analysis)
         primary_df = primary_df.sort_values('Combined Score', ascending=False)
-        
+
         # Interactive Entity Relationship Graph with Enhanced Controls
         if primary_entity_analysis and missing_entities:
             st.markdown("---")
-            st.subheader("🕸️ Entity Relationship Graph")
-            st.markdown("_Visualize how your existing entities relate to missing entities and your target query_")
+            st.subheader("🕸️ Content Semantic Structure Graph")
+            st.markdown("""
+            _This graph visualizes your content's semantic architecture. It shows how your entities (and missing ones) relate to specific sections of your content, helping you find optimization opportunities._
             
+            **What This Graph Shows You:**
+            -   **🔵 Blue Entities (Your Content) → 📄 Purple Content Sections:** Shows exactly which content sections discuss each entity most strongly. This reveals entity distribution across your content.
+            -   **🟠 Orange Entities (Missing) → 📄 Purple Content Sections:** Shows where missing entities would fit best in your existing content, identifying optimal insertion points.
+            -   **🎯 Gold Query → Everything:** Reveals which content sections and entities (yours + missing) are most relevant to your target query.
+
+            **Key Benefits:**
+            -   **Content Gap Identification:** See which sections lack important entities.
+            -   **Optimization Guidance:** Know exactly *where* to add missing entities.
+            -   **Content Structure Analysis:** Visualize your semantic content architecture.
+            -   **Strategic Placement:** Place entities where they'll have maximum impact.
+            """)
+
             # Graph Configuration Controls
             col1, col2, col3 = st.columns(3)
             with col1:
                 max_primary = st.slider(
-                    "Max Primary Entities", 
-                    min_value=5, 
-                    max_value=25, 
-                    value=st.session_state.graph_config['max_primary'], 
+                    "Max Primary Entities",
+                    min_value=5,
+                    max_value=25,
+                    value=st.session_state.graph_config['max_primary'],
                     step=5,
                     help="Show top N entities from your content"
                 )
             with col2:
                 max_missing = st.slider(
-                    "Max Missing Entities", 
-                    min_value=5, 
-                    max_value=20, 
-                    value=st.session_state.graph_config['max_missing'], 
+                    "Max Missing Entities",
+                    min_value=5,
+                    max_value=20,
+                    value=st.session_state.graph_config['max_missing'],
                     step=5,
                     help="Show top N missing entities from competitors"
                 )
             with col3:
                 similarity_threshold = st.slider(
-                    "Connection Threshold", 
-                    min_value=0.3, 
-                    max_value=0.7, 
-                    value=st.session_state.graph_config['threshold'], 
-                    step=0.1,
-                    help="Minimum similarity to show connections"
+                    "Connection Threshold",
+                    min_value=0.3,
+                    max_value=0.7,
+                    value=st.session_state.graph_config['threshold'],
+                    step=0.05,
+                    help="Minimum similarity to show connections between entities and content sections"
                 )
-            
+
             # Entity Type Filters
             st.markdown("**🏷️ Filter by Entity Types:**")
             entity_types = set()
@@ -1102,8 +1029,7 @@ if st.session_state.entity_analysis_results:
                 default=list(entity_types),
                 help="Select which entity types to include in the graph"
             )
-            
-            # Score Threshold
+
             min_score = st.slider(
                 "Minimum Combined Score",
                 min_value=0.0,
@@ -1112,264 +1038,136 @@ if st.session_state.entity_analysis_results:
                 step=0.05,
                 help="Only show entities above this relevance threshold"
             )
-            
-            # Add preset filter buttons for quick selection
-            st.markdown("**⚡ Quick Filters:**")
-            col_a, col_b, col_c, col_d = st.columns(4)
-            with col_a:
-                if st.button("🎯 High Relevance", help="Show only high-scoring entities"):
-                    st.session_state.graph_config = {
-                        'max_primary': 10,
-                        'max_missing': 8,
-                        'min_score': 0.4,
-                        'threshold': 0.5
-                    }
-                    st.rerun()
-            with col_b:
-                if st.button("🔍 Detailed View", help="Show more entities with lower threshold"):
-                    st.session_state.graph_config = {
-                        'max_primary': 20,
-                        'max_missing': 15,
-                        'min_score': 0.1,
-                        'threshold': 0.3
-                    }
-                    st.rerun()
-            with col_c:
-                if st.button("⚡ Focus Mode", help="Show only top entities"):
-                    st.session_state.graph_config = {
-                        'max_primary': 8,
-                        'max_missing': 5,
-                        'min_score': 0.3,
-                        'threshold': 0.5
-                    }
-                    st.rerun()
-            with col_d:
-                if st.button("🔄 Reset", help="Reset to defaults"):
-                    st.session_state.graph_config = {
-                        'max_primary': 15,
-                        'max_missing': 10,
-                        'min_score': 0.15,
-                        'threshold': 0.4
-                    }
-                    st.rerun()
-            
+
             # Update current graph config
             st.session_state.graph_config.update({
-                'max_primary': max_primary,
-                'max_missing': max_missing,
-                'min_score': min_score,
-                'threshold': similarity_threshold
+                'max_primary': max_primary, 'max_missing': max_missing,
+                'min_score': min_score, 'threshold': similarity_threshold
             })
-            
+
             # Entity selection for highlighting
-            missing_entity_names = [entity['Entity'] for entity in missing_entities]
-            
+            missing_entity_names = [e['Entity'] for e in sorted(missing_entities, key=lambda x: x['Combined Score'], reverse=True)]
+
             col1, col2 = st.columns([2, 1])
-            
             with col1:
                 selected_entity_for_graph = st.selectbox(
                     "🎯 Select missing entity to highlight in graph:",
                     options=["None"] + missing_entity_names,
                     index=0,
-                    help="Choose a missing entity to highlight its relationships in red"
+                    help="Choose a missing entity to highlight its node in red"
                 )
-            
             with col2:
-                if st.button("🔄 Refresh Graph Layout"):
-                    # Force recalculation of graph layout
+                 if st.button("🔄 Refresh Graph Layout"):
                     st.rerun()
-            
+
             # Filter entities based on user selections
             filtered_primary = [
-                e for e in primary_entity_analysis 
-                if e.get('Type', 'UNKNOWN') in selected_types 
+                e for e in primary_entity_analysis
+                if e.get('Type', 'UNKNOWN') in selected_types
                 and e.get('Combined Score', 0) >= min_score
             ][:max_primary]
-            
+
             filtered_missing = [
-                e for e in missing_entities 
-                if e.get('Type', 'UNKNOWN') in selected_types 
+                e for e in missing_entities
+                if e.get('Type', 'UNKNOWN') in selected_types
                 and e.get('Combined Score', 0) >= min_score
             ][:max_missing]
-            
-            if filtered_primary or filtered_missing:
-                with st.spinner("Calculating entity relationships..."):
+
+            primary_url_passages = st.session_state.content_passages.get(primary_url, [])
+            if (filtered_primary or filtered_missing) and primary_url_passages:
+                with st.spinner("Calculating entity-to-content relationships..."):
                     st.session_state.entity_relationships = calculate_entity_relationships(
                         filtered_primary,
                         filtered_missing,
                         st.session_state.embedding_model,
                         target_query,
+                        primary_url_passages, # Pass passages to function
                         similarity_threshold=similarity_threshold
                     )
-                
-                # Create and display the graph
+
                 selected_entity = selected_entity_for_graph if selected_entity_for_graph != "None" else None
-                
                 entity_graph = create_entity_relationship_graph(
                     st.session_state.entity_relationships,
                     selected_missing_entity=selected_entity
                 )
-                
+
                 if entity_graph:
-                    st.plotly_chart(entity_graph, use_container_width=True, height=600)
-                    
-                    # Graph insights
-                    with st.expander("📊 Graph Insights", expanded=False):
-                        relationships = st.session_state.entity_relationships
-                        
-                        total_primary = len(relationships['primary_entities'])
-                        total_missing = len(relationships['missing_entities'])
-                        total_edges = len(relationships['edges'])
-                        
-                        col_a, col_b, col_c = st.columns(3)
-                        
-                        with col_a:
-                            st.metric("Your Entities", total_primary)
-                            st.metric("Missing Entities", total_missing)
-                        
-                        with col_b:
-                            st.metric("Total Relationships", total_edges)
-                            query_connections = len([e for e in relationships['edges'] if 'query' in e['source'] or 'query' in e['target']])
-                            st.metric("Query Connections", query_connections)
-                        
-                        with col_c:
-                            if total_edges > 0:
-                                avg_similarity = np.mean([e['weight'] for e in relationships['edges']])
-                                st.metric("Avg Similarity", f"{avg_similarity:.3f}")
-                            
-                            strong_connections = len([e for e in relationships['edges'] if e['weight'] > 0.5])
-                            st.metric("Strong Connections", strong_connections)
-                        
-                        # Recommendations based on graph analysis
-                        st.markdown("**🎯 Key Insights:**")
-                        
-                        # Find most connected missing entities
-                        missing_connections = {}
-                        for edge in relationships['edges']:
-                            if edge['type'] == 'primary_to_missing':
-                                target = edge['target']
-                                if target not in missing_connections:
-                                    missing_connections[target] = []
-                                missing_connections[target].append(edge['weight'])
-                        
-                        if missing_connections:
-                            # Find missing entity with strongest connections
-                            best_connected = max(missing_connections.items(), 
-                                               key=lambda x: (len(x[1]), max(x[1])))
-                            entity_id = best_connected[0]
-                            entity_name = next(e['name'] for e in relationships['missing_entities'] 
-                                             if e['id'] == entity_id)
-                            
-                            st.success(f"**Most Connected Missing Entity:** {entity_name} "
-                                     f"({len(best_connected[1])} connections, max similarity: {max(best_connected[1]):.3f})")
-                        
-                        # Find query-relevant missing entities
-                        query_missing_edges = [e for e in relationships['edges'] if e['type'] == 'query_to_missing']
-                        if query_missing_edges:
-                            best_query_edge = max(query_missing_edges, key=lambda x: x['weight'])
-                            target_id = best_query_edge['target']
-                            entity_name = next(e['name'] for e in relationships['missing_entities'] 
-                                             if e['id'] == target_id)
-                            
-                            st.info(f"**Most Query-Relevant Missing Entity:** {entity_name} "
-                                   f"(similarity to query: {best_query_edge['weight']:.3f})")
+                    st.plotly_chart(entity_graph, use_container_width=True, config={'displayModeBar': True}, height=700)
                 else:
-                    st.warning("Could not generate entity relationship graph. Please check if entities were extracted successfully.")
+                    st.warning("Could not generate the relationship graph. Not enough connections found with current settings.")
             else:
-                st.warning("No entities match the selected filters. Please adjust your filter settings.")
-        
+                st.warning("No entities match the selected filters, or no content was found for the primary URL. Please adjust your settings.")
+
         # Missing Entity Location Analysis
         if missing_entities and st.session_state.content_passages.get(primary_url):
             st.subheader("📍 Where to Add Missing Entities in Your Content")
             st.markdown("_Select from all missing entities to find optimal insertion locations_")
-            
+
             passages = st.session_state.content_passages[primary_url]
-            
-            # Sort missing entities by query relevance (show all, not just top 25)
             sorted_missing = sorted(missing_entities, key=lambda x: x['Query Relevance'], reverse=True)
-            
-            # Entity selection dropdown
+
             entity_options = []
             entity_lookup = {}
-            
+
             for entity_info in sorted_missing:
                 entity_name = entity_info['Entity']
                 query_relevance = entity_info['Query Relevance']
-                combined_score = entity_info['Combined Score']
-                
-                display_name = f"{entity_name} (Query: {query_relevance:.3f})"
+                display_name = f"{entity_name} (Query Relevance: {query_relevance:.3f})"
                 entity_options.append(display_name)
                 entity_lookup[display_name] = entity_info
-            
+
             selected_entity_display = st.selectbox(
                 "🔍 Select missing entity to analyze:",
                 options=[""] + entity_options,
                 index=0,
                 help=f"All {len(sorted_missing)} missing entities sorted by Query Relevance (highest first)."
             )
-            
+
             if selected_entity_display and selected_entity_display != "":
                 entity_info = entity_lookup[selected_entity_display]
                 entity_name = entity_info['Entity']
-                
-                # Find best passage
+
                 best_passage_info = find_entity_best_passage(
-                    entity_name, 
-                    passages, 
+                    entity_name,
+                    passages,
                     st.session_state.embedding_model
                 )
-                
+
                 col_a, col_b = st.columns([1, 2])
-                
+
                 with col_a:
                     st.markdown("**📊 Entity Metrics:**")
                     st.metric("Query Relevance", f"{entity_info['Query Relevance']:.3f}")
                     st.metric("Combined Score", f"{entity_info['Combined Score']:.3f}")
                     st.metric("Document Salience", f"{entity_info['Document Salience']:.3f}")
-                    
                     st.markdown("**🏢 Details:**")
                     st.markdown(f"- **Type:** {entity_info['Type']}")
-                    st.markdown(f"- **Found on:** {entity_info['Found On']} site(s)")
-                
+                    st.markdown(f"- **Found on:** {entity_info['Found On']} competitor site(s)")
+
                 with col_b:
                     if best_passage_info["similarity"] > 0.1:
                         st.markdown("**🎯 Recommended Insertion Location:**")
                         st.markdown(f"**Content Relevance:** {best_passage_info['similarity']:.3f}")
-                        
+
                         st.text_area(
                             "Best passage for adding this entity:",
                             value=best_passage_info["passage"],
-                            height=120,
-                            disabled=True,
+                            height=120, disabled=True,
                             key=f"passage_{entity_name.replace(' ', '_')}"
                         )
-                        
-                        if best_passage_info["similarity"] > 0.5:
-                            st.success("✅ **Excellent insertion point**")
-                        elif best_passage_info["similarity"] > 0.3:
-                            st.info("ℹ️ **Good insertion point**")
-                        else:
-                            st.warning("⚠️ **Lower relevance**")
-                            
-                        # Add Gemini semantic analysis
+
+                        if best_passage_info["similarity"] > 0.5: st.success("✅ **Excellent insertion point**")
+                        elif best_passage_info["similarity"] > 0.3: st.info("ℹ️ **Good insertion point**")
+                        else: st.warning("⚠️ **Lower relevance** - consider if a new section is needed.")
+
                         if st.session_state.get('gemini_api_configured', False):
                             if st.button(f"🤖 Get AI Implementation Strategy for '{entity_name}'", key=f"gemini_{entity_name.replace(' ', '_')}"):
                                 with st.spinner("Generating strategic implementation analysis..."):
-                                    # Get primary URL content for tone analysis
-                                    primary_content = ""
-                                    if primary_url in st.session_state.get('entity_analysis_results', {}):
-                                        # Reconstruct content from passages
-                                        passages = st.session_state.content_passages.get(primary_url, [])
-                                        primary_content = " ".join(passages[:5])  # First 5 passages for tone analysis
-                                    
+                                    primary_content = " ".join(st.session_state.content_passages.get(primary_url, [])[:5])
                                     semantic_analysis = generate_semantic_implementation_analysis(
-                                        entity_name,
-                                        primary_content,
-                                        best_passage_info["passage"],
-                                        target_query,
-                                        entity_info
+                                        entity_name, primary_content, best_passage_info["passage"],
+                                        target_query, entity_info
                                     )
-                                    
                                     if semantic_analysis:
                                         st.markdown("---")
                                         st.markdown("### 🤖 AI Implementation Strategy")
@@ -1381,25 +1179,16 @@ if st.session_state.entity_analysis_results:
                     else:
                         st.markdown("**🤔 No strongly relevant passage found.**")
                         st.info(f"Consider adding a new section about '{entity_name}'.")
-                        
-                        # Gemini analysis for new section creation
+
                         if st.session_state.get('gemini_api_configured', False):
                             if st.button(f"🤖 Get AI Strategy for New '{entity_name}' Section", key=f"gemini_new_{entity_name.replace(' ', '_')}"):
                                 with st.spinner("Generating new section strategy..."):
-                                    # Generate strategy for creating new section
-                                    primary_content = ""
-                                    if primary_url in st.session_state.get('entity_analysis_results', {}):
-                                        passages = st.session_state.content_passages.get(primary_url, [])
-                                        primary_content = " ".join(passages[:5])
-                                    
+                                    primary_content = " ".join(st.session_state.content_passages.get(primary_url, [])[:5])
                                     semantic_analysis = generate_semantic_implementation_analysis(
-                                        entity_name,
-                                        primary_content,
-                                        "No existing relevant passage found - new section needed",
-                                        target_query,
-                                        entity_info
+                                        entity_name, primary_content,
+                                        "No existing relevant passage found - a new section is required",
+                                        target_query, entity_info
                                     )
-                                    
                                     if semantic_analysis:
                                         st.markdown("---")
                                         st.markdown("### 🤖 AI Strategy for New Section")
@@ -1409,6 +1198,6 @@ if st.session_state.entity_analysis_results:
 
 # Footer
 st.sidebar.divider()
-st.sidebar.info("🎯 Entity Gap Analysis Tool v2.1")
+st.sidebar.info("🎯 Entity Gap Analysis Tool v2.2")
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Created by [The SEO Consultant.ai](https://theseoconsultant.ai/)**")
