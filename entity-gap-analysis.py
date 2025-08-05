@@ -272,6 +272,35 @@ def calculate_entity_query_relevance(entity_name, query_text, model):
         st.warning(f"Failed to calculate similarity for '{entity_name}': {e}")
         return 0.0
 
+def calculate_entity_similarity_to_list(entity_name, entity_list, model, threshold=0.7):
+    """Check if an entity is semantically similar to any entity in a list."""
+    if not model or not entity_name or not entity_list:
+        return False, 0.0, None
+    
+    try:
+        # Encode the candidate entity
+        entity_embedding = model.encode([entity_name])
+        
+        # Encode all entities in the list
+        list_embeddings = model.encode(entity_list)
+        
+        # Calculate similarities
+        similarities = cosine_similarity(entity_embedding, list_embeddings)[0]
+        
+        # Find the best match
+        best_similarity = float(np.max(similarities))
+        best_match_idx = np.argmax(similarities)
+        
+        # Return whether it's similar enough and the similarity score
+        is_similar = best_similarity > threshold
+        best_match = entity_list[best_match_idx] if is_similar else None
+        
+        return is_similar, best_similarity, best_match
+        
+    except Exception as e:
+        st.warning(f"Failed to calculate entity similarity for '{entity_name}': {e}")
+        return False, 0.0, None
+
 def calculate_entity_relationships(primary_entities, missing_entities, embedding_model, target_query, primary_content_passages, similarity_threshold=0.4):
     """Calculates relationships between entities, the query, and content sections."""
     if not embedding_model or not primary_content_passages:
@@ -880,20 +909,36 @@ if st.session_state.entity_analysis_results:
                         }
                     competitor_entities[entity_key]['found_on'].append(url)
 
-        # Calculate entity gaps with better matching
+    # Calculate entity gaps with semantic matching
         primary_entity_keys = set(primary_entities.keys())
-        primary_entity_names = {entity_data['name'].lower() for entity_data in primary_entities.values()}
+        primary_entity_names = [entity_data['name'] for entity_data in primary_entities.values()]
         missing_entities = []
 
         for entity_key, comp_data in competitor_entities.items():
             entity_name = comp_data['data']['name']
             entity_name_lower = entity_name.lower()
 
-            # Check both exact key match and name similarity
-            is_missing = (entity_key not in primary_entity_keys and
-                         entity_name_lower not in primary_entity_names and
-                         not any(entity_name_lower in primary_name or primary_name in entity_name_lower
-                                for primary_name in primary_entity_names))
+            # First check exact matches (fast)
+            exact_match = (entity_key in primary_entity_keys or
+                          entity_name_lower in {name.lower() for name in primary_entity_names})
+            
+            # If no exact match, check semantic similarity
+            if not exact_match:
+                is_similar, similarity_score, best_match = calculate_entity_similarity_to_list(
+                    entity_name, 
+                    primary_entity_names, 
+                    st.session_state.embedding_model,
+                    threshold=0.7  # 70% similarity threshold
+                )
+                
+                # Entity is missing if it's not semantically similar
+                is_missing = not is_similar
+                
+                # Optional: Add debug info
+                if is_similar and similarity_score > 0.7:
+                    st.write(f"🔍 '{entity_name}' matches '{best_match}' (similarity: {similarity_score:.3f})")
+            else:
+                is_missing = False
 
             if is_missing:
                 # Calculate query relevance
