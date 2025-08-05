@@ -272,7 +272,7 @@ def calculate_entity_query_relevance(entity_name, query_text, model):
         st.warning(f"Failed to calculate similarity for '{entity_name}': {e}")
         return 0.0
 
-def calculate_entity_similarity_to_list(entity_name, entity_list, model, threshold=0.7):
+def calculate_entity_similarity_to_list(entity_name, entity_list, model, threshold=0.8):
     """Check if an entity is semantically similar to any entity in a list - OPTIMIZED."""
     if not model or not entity_name or not entity_list:
         return False, 0.0, None
@@ -944,7 +944,7 @@ if st.session_state.entity_analysis_results:
                         entity_name, 
                         primary_entity_names, 
                         st.session_state.embedding_model,
-                        threshold=0.7
+                        threshold=0.8
                     )
                     
                     is_missing = not is_similar
