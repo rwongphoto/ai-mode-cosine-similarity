@@ -11,11 +11,7 @@ import random
 import base64
 import json
 import re
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
-from selenium_stealth import stealth
 import networkx as nx
 
 # Google Cloud NLP libraries
@@ -26,7 +22,6 @@ st.set_page_config(layout="wide", page_title="Entity Gap Analysis Tool")
 
 # --- Session State Initialization ---
 if "processing" not in st.session_state: st.session_state.processing = False
-if "selenium_driver_instance" not in st.session_state: st.session_state.selenium_driver_instance = None
 if "gcp_nlp_configured" not in st.session_state: st.session_state.gcp_nlp_configured = False
 if "gcp_credentials_info" not in st.session_state: st.session_state.gcp_credentials_info = None
 if "zyte_api_key_to_persist" not in st.session_state: st.session_state.zyte_api_key_to_persist = ""
@@ -634,21 +629,6 @@ def generate_semantic_implementation_analysis(entity_name, primary_content, best
         return None
 
 # --- Content Fetching Functions ---
-def initialize_selenium_driver():
-    """Initialize Selenium driver with stealth configuration."""
-    options = ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    try:
-        driver = webdriver.Chrome(service=ChromeService(), options=options)
-        stealth(driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True)
-        return driver
-    except Exception as e:
-        st.error(f"Selenium initialization failed: {e}")
-        return None
-
 def fetch_content_with_zyte(url, api_key):
     """Fetch content using Zyte API."""
     if not api_key:
@@ -680,25 +660,6 @@ def fetch_content_with_zyte(url, api_key):
     except Exception as e:
         st.error(f"Zyte API error for {url}: {e}")
         return None
-
-def fetch_content_with_selenium(url, driver_instance):
-    """Fetch content using Selenium with proper fallback."""
-    if not driver_instance:
-        return fetch_content_with_requests(url)
-    try:
-        enforce_rate_limit()
-        driver_instance.get(url)
-        time.sleep(5)
-        return driver_instance.page_source
-    except Exception as e:
-        st.error(f"Selenium fetch error for {url}: {e}")
-        st.session_state.selenium_driver_instance = None
-        st.warning(f"Selenium failed for {url}. Falling back to requests.")
-        try:
-            return fetch_content_with_requests(url)
-        except Exception as req_e:
-            st.error(f"Requests fallback also failed for {url}: {req_e}")
-            return None
 
 def fetch_content_with_requests(url):
     """Fetch content using requests with user agent rotation."""
@@ -745,8 +706,8 @@ target_query = st.sidebar.text_input(
 
 scraping_method = st.sidebar.selectbox(
     "Scraping Method:",
-    ["Requests (fast)", "Zyte API (best)", "Selenium (for JS)"],
-    index=0,
+    ["Zyte API (recommended)", "Requests (basic)"],
+    index=0,  # Default to Zyte API
     disabled=st.session_state.processing
 )
 
@@ -794,11 +755,6 @@ if st.session_state.processing:
         url_content = {}
         url_entities = {}
 
-        # Initialize Selenium if needed
-        if scraping_method.startswith("Selenium") and not st.session_state.selenium_driver_instance:
-            with st.spinner("Initializing Selenium WebDriver..."):
-                st.session_state.selenium_driver_instance = initialize_selenium_driver()
-
         with st.spinner(f"Fetching content from {len(all_urls)} URLs..."):
             for i, url in enumerate(all_urls):
                 st.write(f"Fetching {i+1}/{len(all_urls)}: {url}")
@@ -806,9 +762,8 @@ if st.session_state.processing:
                 # Choose fetching method
                 if scraping_method.startswith("Zyte") and st.session_state.zyte_api_configured:
                     content = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
-                elif scraping_method.startswith("Selenium"):
-                    content = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
                 else:
+                    # Fallback to requests if Zyte not configured
                     content = fetch_content_with_requests(url)
 
                 if content:
@@ -820,11 +775,6 @@ if st.session_state.processing:
                         st.warning(f"⚠️ Insufficient content from {url}")
                 else:
                     st.error(f"❌ Failed to fetch {url}")
-
-        # Clean up Selenium if used
-        if st.session_state.selenium_driver_instance:
-            st.session_state.selenium_driver_instance.quit()
-            st.session_state.selenium_driver_instance = None
 
         if not url_content:
             st.error("No content was successfully fetched. Please check your URLs and try again.")
