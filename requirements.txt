@@ -15,3 +15,4 @@ trafilatura
 openai
 selenium-stealth
 google-cloud-language
+huggingface_hub
