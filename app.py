@@ -20,6 +20,7 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 import textwrap
 from selenium_stealth import stealth
+from huggingface_hub import login as hf_login
 
 st.set_page_config(layout="wide", page_title="AI Mode Query Fan-Out Analyzer")
 
@@ -38,6 +39,8 @@ if "selected_embedding_model" not in st.session_state: st.session_state.selected
 if "processing" not in st.session_state: st.session_state.processing = False
 if "zyte_api_key_to_persist" not in st.session_state: st.session_state.zyte_api_key_to_persist = ""
 if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_configured = False
+if "huggingface_api_key_to_persist" not in st.session_state: st.session_state.huggingface_api_key_to_persist = ""
+if "huggingface_api_configured" not in st.session_state: st.session_state.huggingface_api_configured = False
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -105,6 +108,23 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
         else: 
             st.warning("Please enter API Key.")
 
+with st.sidebar.expander("Hugging Face API (for Gemma models)", expanded=not st.session_state.get("huggingface_api_configured", False)):
+    hf_api_key_input = st.text_input("Enter Hugging Face API Key:", type="password", value=st.session_state.get("huggingface_api_key_to_persist", ""), disabled=st.session_state.processing)
+    if st.button("Set & Verify Hugging Face Key", disabled=st.session_state.processing):
+        if hf_api_key_input:
+            try:
+                hf_login(token=hf_api_key_input, add_to_git_credential=False)
+                st.session_state.huggingface_api_key_to_persist = hf_api_key_input
+                st.session_state.huggingface_api_configured = True
+                st.success("Hugging Face API Key Configured!")
+                st.rerun()
+            except Exception as e:
+                st.session_state.huggingface_api_key_to_persist = ""
+                st.session_state.huggingface_api_configured = False
+                st.error(f"Hugging Face Key Failed: {str(e)[:200]}")
+        else:
+            st.warning("Please enter Hugging Face API Key.")
+
 with st.sidebar.expander("Zyte API (Web Scraping)", expanded=not st.session_state.get("zyte_api_configured", False)):
     zyte_api_key_input = st.text_input("Enter Zyte API Key:", type="password", value=st.session_state.get("zyte_api_key_to_persist", ""), disabled=st.session_state.processing)
     if st.button("Set & Verify Zyte Key", disabled=st.session_state.processing):
@@ -141,6 +161,7 @@ if st.session_state.get("gemini_api_configured"):
 else: 
     st.sidebar.markdown("⚠️ Gemini API: **Not Configured**")
 
+st.sidebar.markdown(f"✅ Hugging Face API: **{'Configured' if st.session_state.huggingface_api_configured else 'Not Configured'}**")
 st.sidebar.markdown(f"✅ Zyte API: **{'Configured' if st.session_state.zyte_api_configured else 'Not Configured'}**")
 
 # Initialize clients if keys are available
@@ -153,13 +174,27 @@ if st.session_state.get("gemini_api_key_to_persist"):
     except Exception: 
         st.session_state.gemini_api_configured = False
 
+# Initialize Hugging Face authentication if key is available
+if st.session_state.get("huggingface_api_key_to_persist") and st.session_state.get("huggingface_api_configured"):
+    try:
+        hf_login(token=st.session_state.huggingface_api_key_to_persist, add_to_git_credential=False)
+    except Exception:
+        st.session_state.huggingface_api_configured = False
+
 # --- Embedding Functions ---
 @st.cache_resource
 def load_local_sentence_transformer_model(model_name):
-    try: 
-        return SentenceTransformer(model_name)
+    try:
+        # Use authentication token if available and model requires it
+        if st.session_state.get("huggingface_api_configured") and st.session_state.get("huggingface_api_key_to_persist"):
+            # Re-authenticate in case it was reset
+            hf_login(token=st.session_state.huggingface_api_key_to_persist, add_to_git_credential=False)
+        
+        return SentenceTransformer(model_name, use_auth_token=st.session_state.get("huggingface_api_key_to_persist", None))
     except Exception as e: 
         st.error(f"Failed to load local model '{model_name}': {e}")
+        if "gated" in str(e).lower() or "authentication" in str(e).lower():
+            st.warning("This model may be gated. Please ensure your Hugging Face API key has access to this model.")
         return None
 
 def get_openai_embeddings(texts: list, client: OpenAI, model: str):
@@ -505,6 +540,8 @@ embedding_model_options = {
     "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", 
     "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", 
     "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1",
+    "Local: Google Gemma 2B Text Embeddings": "google/gemma-2b-it",
+    "Local: Nomic Embed Text (Good & Free)": "nomic-ai/nomic-embed-text-v1",
     "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", 
     "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", 
     "Gemini: embedding-001": "gemini-embedding-001"
