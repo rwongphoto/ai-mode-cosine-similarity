@@ -14,6 +14,7 @@ import ast
 import time
 import random
 import base64
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -41,6 +42,16 @@ if "zyte_api_key_to_persist" not in st.session_state: st.session_state.zyte_api_
 if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_configured = False
 if "huggingface_api_key_to_persist" not in st.session_state: st.session_state.huggingface_api_key_to_persist = ""
 if "huggingface_api_configured" not in st.session_state: st.session_state.huggingface_api_configured = False
+
+# Check for environment variable API keys (for deployment environments like Posit Connect)
+env_hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN') or os.getenv('hf_login')
+if env_hf_token and not st.session_state.huggingface_api_configured:
+    try:
+        hf_login(token=env_hf_token, add_to_git_credential=False)
+        st.session_state.huggingface_api_key_to_persist = env_hf_token
+        st.session_state.huggingface_api_configured = True
+    except Exception:
+        pass
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
@@ -109,21 +120,27 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
             st.warning("Please enter API Key.")
 
 with st.sidebar.expander("Hugging Face API (for Gemma models)", expanded=not st.session_state.get("huggingface_api_configured", False)):
-    hf_api_key_input = st.text_input("Enter Hugging Face API Key:", type="password", value=st.session_state.get("huggingface_api_key_to_persist", ""), disabled=st.session_state.processing)
-    if st.button("Set & Verify Hugging Face Key", disabled=st.session_state.processing):
-        if hf_api_key_input:
-            try:
-                hf_login(token=hf_api_key_input, add_to_git_credential=False)
-                st.session_state.huggingface_api_key_to_persist = hf_api_key_input
-                st.session_state.huggingface_api_configured = True
-                st.success("Hugging Face API Key Configured!")
-                st.rerun()
-            except Exception as e:
-                st.session_state.huggingface_api_key_to_persist = ""
-                st.session_state.huggingface_api_configured = False
-                st.error(f"Hugging Face Key Failed: {str(e)[:200]}")
-        else:
-            st.warning("Please enter Hugging Face API Key.")
+    # Check if configured via environment variable
+    env_hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN') or os.getenv('hf_login')
+    if env_hf_token and st.session_state.huggingface_api_configured:
+        st.info("🔐 Hugging Face API configured via environment variable")
+        st.markdown("*Using HF_TOKEN, HUGGINGFACE_TOKEN, or hf_login from environment*")
+    else:
+        hf_api_key_input = st.text_input("Enter Hugging Face API Key:", type="password", value=st.session_state.get("huggingface_api_key_to_persist", "") if not env_hf_token else "", disabled=st.session_state.processing)
+        if st.button("Set & Verify Hugging Face Key", disabled=st.session_state.processing):
+            if hf_api_key_input:
+                try:
+                    hf_login(token=hf_api_key_input, add_to_git_credential=False)
+                    st.session_state.huggingface_api_key_to_persist = hf_api_key_input
+                    st.session_state.huggingface_api_configured = True
+                    st.success("Hugging Face API Key Configured!")
+                    st.rerun()
+                except Exception as e:
+                    st.session_state.huggingface_api_key_to_persist = ""
+                    st.session_state.huggingface_api_configured = False
+                    st.error(f"Hugging Face Key Failed: {str(e)[:200]}")
+            else:
+                st.warning("Please enter Hugging Face API Key.")
 
 with st.sidebar.expander("Zyte API (Web Scraping)", expanded=not st.session_state.get("zyte_api_configured", False)):
     zyte_api_key_input = st.text_input("Enter Zyte API Key:", type="password", value=st.session_state.get("zyte_api_key_to_persist", ""), disabled=st.session_state.processing)
