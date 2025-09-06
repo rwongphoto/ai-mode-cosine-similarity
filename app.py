@@ -557,8 +557,7 @@ embedding_model_options = {
     "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", 
     "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", 
     "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1",
-    "Local: Google Gemma 2B Text Embeddings": "google/gemma-2b-it",
-    "Local: Nomic Embed Text (Good & Free)": "nomic-ai/nomic-embed-text-v1",
+    "Google: Gemma Embedding (300M)": "google/embeddinggemma-300m",
     "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", 
     "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", 
     "Gemini: embedding-001": "gemini-embedding-001"
