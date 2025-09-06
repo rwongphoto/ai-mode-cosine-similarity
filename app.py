@@ -124,7 +124,7 @@ with st.sidebar.expander("Hugging Face API (for Gemma models)", expanded=not st.
     env_hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN') or os.getenv('hf_login')
     if env_hf_token and st.session_state.huggingface_api_configured:
         st.info("🔐 Hugging Face API configured via environment variable")
-        st.markdown("*Using HF_TOKEN, HUGGINGFACE_TOKEN, or hf_login from environment*")
+        st.markdown("*Using key from environment*")
     else:
         hf_api_key_input = st.text_input("Enter Hugging Face API Key:", type="password", value=st.session_state.get("huggingface_api_key_to_persist", "") if not env_hf_token else "", disabled=st.session_state.processing)
         if st.button("Set & Verify Hugging Face Key", disabled=st.session_state.processing):
