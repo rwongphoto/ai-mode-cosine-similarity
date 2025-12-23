@@ -455,7 +455,7 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         passage_score = best_score
         
         # Color coding based on score
-        color = "green" if passage_score >= 0.80 else "red" if passage_score < 0.60 else "inherit"
+        color = "green" if passage_score >= 0.75 else "red" if passage_score < 0.60 else "inherit"
         style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 1em; margin-top: 1em;"
         
         if element.name in ['ul', 'ol']:
@@ -480,7 +480,7 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
         cleaned_sentence = clean_text_for_display(sentence)
         if cleaned_sentence in unit_scores_map: 
             sentence_score = unit_scores_map[cleaned_sentence]
-        color = "green" if sentence_score >= 0.80 else "red" if sentence_score < 0.60 else "black"
+        color = "green" if sentence_score >= 0.75 else "red" if sentence_score < 0.60 else "black"
         highlighted_html += f'<p style="color:{color}; margin-bottom: 2px;">{cleaned_sentence}</p>'
     
     return highlighted_html
