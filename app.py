@@ -736,6 +736,7 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
 def generate_seo_recommendations(url, analysis_results, processed_units_data):
     """
     Uses Gemini to generate SEO/AI Search recommendations based on the similarity analysis results.
+    Includes competitive gap analysis when multiple URLs are analyzed.
     """
     if not st.session_state.get("gemini_api_configured", False):
         st.error("Gemini API not configured for recommendations.")
@@ -746,6 +747,10 @@ def generate_seo_recommendations(url, analysis_results, processed_units_data):
     if not url_metrics:
         return None
 
+    # Get all unique URLs for competitive analysis
+    all_urls = list(set(m["URL"] for m in analysis_results))
+    competitor_urls = [u for u in all_urls if u != url]
+
     # Get overall scores
     avg_overall_sim = np.mean([m["Overall Similarity (Weighted)"] for m in url_metrics])
     avg_max_sim = np.mean([m["Max Unit Sim."] for m in url_metrics])
@@ -755,6 +760,51 @@ def generate_seo_recommendations(url, analysis_results, processed_units_data):
                     for m in url_metrics if m["Overall Similarity (Weighted)"] < 0.6]
     strong_queries = [(m["Query"], m["Overall Similarity (Weighted)"], m["Max Similarity Passage"])
                       for m in url_metrics if m["Overall Similarity (Weighted)"] >= 0.75]
+
+    # --- Competitive Gap Analysis ---
+    competitive_gaps = []  # Queries where competitors outperform target URL
+    competitive_wins = []  # Queries where target URL outperforms competitors
+
+    if competitor_urls:
+        # Group metrics by query
+        queries = list(set(m["Query"] for m in analysis_results))
+        for query in queries:
+            target_metric = next((m for m in url_metrics if m["Query"] == query), None)
+            if not target_metric:
+                continue
+
+            target_score = target_metric["Overall Similarity (Weighted)"]
+
+            # Find best competitor score for this query
+            competitor_metrics = [m for m in analysis_results if m["URL"] != url and m["Query"] == query]
+            if competitor_metrics:
+                best_competitor = max(competitor_metrics, key=lambda x: x["Overall Similarity (Weighted)"])
+                best_comp_score = best_competitor["Overall Similarity (Weighted)"]
+                score_gap = best_comp_score - target_score
+
+                # Significant gap where competitor wins (> 0.1 difference)
+                if score_gap > 0.1:
+                    competitive_gaps.append({
+                        "query": query,
+                        "target_score": target_score,
+                        "competitor_url": best_competitor["URL"],
+                        "competitor_score": best_comp_score,
+                        "gap": score_gap,
+                        "competitor_passage": best_competitor.get("Max Similarity Passage", "")
+                    })
+                # Target URL wins significantly
+                elif score_gap < -0.1:
+                    competitive_wins.append({
+                        "query": query,
+                        "target_score": target_score,
+                        "competitor_url": best_competitor["URL"],
+                        "competitor_score": best_comp_score,
+                        "advantage": -score_gap
+                    })
+
+        # Sort by gap size (largest gaps first)
+        competitive_gaps.sort(key=lambda x: x["gap"], reverse=True)
+        competitive_wins.sort(key=lambda x: x["advantage"], reverse=True)
 
     # Get content passages for context
     content_passages = []
@@ -781,9 +831,31 @@ Analyze this content similarity report and provide actionable SEO recommendation
 ## Overall Performance
 - Average Similarity Score: {avg_overall_sim:.3f} (scale 0-1, higher is better)
 - Average Best-Match Score: {avg_max_sim:.3f}
-
-## Queries with WEAK Content Coverage (< 0.6 similarity):
 """
+
+    # Add competitive context if available
+    if competitor_urls:
+        prompt += f"\n## Competitive Landscape\nAnalyzed against {len(competitor_urls)} competitor URL(s): {', '.join(competitor_urls[:3])}{'...' if len(competitor_urls) > 3 else ''}\n"
+
+    # Add competitive gaps - this is KEY for recommendations
+    if competitive_gaps:
+        prompt += "\n## 🚨 COMPETITIVE CONTENT GAPS (Competitors Outperform You):\n"
+        prompt += "These are HIGH PRIORITY - competitors have better semantic coverage for these queries:\n"
+        for gap in competitive_gaps[:8]:
+            prompt += f"\n- Query: \"{gap['query']}\""
+            prompt += f"\n  YOUR Score: {gap['target_score']:.3f} vs COMPETITOR Score: {gap['competitor_score']:.3f} (Gap: -{gap['gap']:.3f})"
+            prompt += f"\n  Winning Competitor: {gap['competitor_url']}"
+            if gap['competitor_passage']:
+                prompt += f"\n  Competitor's Best Content: \"{gap['competitor_passage'][:250]}...\""
+            prompt += "\n"
+
+    # Add competitive wins
+    if competitive_wins:
+        prompt += "\n## ✅ YOUR COMPETITIVE ADVANTAGES (You Outperform Competitors):\n"
+        for win in competitive_wins[:5]:
+            prompt += f"\n- Query: \"{win['query']}\" (Your advantage: +{win['advantage']:.3f})"
+
+    prompt += "\n\n## Queries with WEAK Content Coverage (< 0.6 similarity):\n"
 
     if weak_queries:
         for query, score, passage in weak_queries[:10]:
@@ -820,9 +892,19 @@ Provide specific, actionable SEO recommendations to improve this page's visibili
 3. **Semantic Coverage**: What related concepts, entities, or long-tail variations are missing?
 4. **AI Search Optimization**: Specific tips for appearing in AI Overviews, featured snippets, and conversational AI results.
 5. **Quick Wins**: 3-5 immediate changes that could improve scores.
-
-Format your response with clear headers and bullet points. Be specific and reference the actual queries and content where relevant.
 """
+
+    # Add competitive-specific instructions if we have competitor data
+    if competitive_gaps:
+        prompt += """
+6. **CRITICAL - Competitive Gap Analysis**: For each major competitive gap identified above, explain:
+   - WHY the competitor's content scores better semantically
+   - WHAT specific content/topics/structure the target URL is missing
+   - HOW to create content that matches or exceeds the competitor's coverage
+   - Specific phrases, topics, or entities to add based on the competitor's winning content
+"""
+
+    prompt += "\nFormat your response with clear headers and bullet points. Be specific and reference the actual queries, competitor content, and gaps where relevant."
 
     try:
         model = genai.GenerativeModel("gemini-2.5-pro")
@@ -1365,14 +1447,44 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             weak_count = len([m for m in url_metrics if m["Overall Similarity (Weighted)"] < 0.6])
             strong_count = len([m for m in url_metrics if m["Overall Similarity (Weighted)"] >= 0.75])
 
-            # Summary metrics
-            metric_col1, metric_col2, metric_col3 = st.columns(3)
-            with metric_col1:
-                st.metric("Avg. Similarity", f"{avg_sim:.2%}")
-            with metric_col2:
-                st.metric("Content Gaps", weak_count, help="Queries with < 60% similarity")
-            with metric_col3:
-                st.metric("Strong Matches", strong_count, help="Queries with >= 75% similarity")
+            # Calculate competitive gaps if multiple URLs
+            all_analyzed_urls = list(st.session_state.url_processed_units_dict.keys())
+            competitor_gap_count = 0
+            if len(all_analyzed_urls) > 1:
+                queries = list(set(m["Query"] for m in st.session_state.all_url_metrics_list))
+                for query in queries:
+                    target_metric = next((m for m in url_metrics if m["Query"] == query), None)
+                    if target_metric:
+                        target_score = target_metric["Overall Similarity (Weighted)"]
+                        competitor_metrics = [m for m in st.session_state.all_url_metrics_list
+                                            if m["URL"] != selected_url_for_recs and m["Query"] == query]
+                        if competitor_metrics:
+                            best_comp_score = max(m["Overall Similarity (Weighted)"] for m in competitor_metrics)
+                            if best_comp_score - target_score > 0.1:
+                                competitor_gap_count += 1
+
+            # Summary metrics - show 4 columns if we have competitive data
+            if len(all_analyzed_urls) > 1:
+                metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+                with metric_col1:
+                    st.metric("Avg. Similarity", f"{avg_sim:.2%}")
+                with metric_col2:
+                    st.metric("Content Gaps", weak_count, help="Queries with < 60% similarity")
+                with metric_col3:
+                    st.metric("Strong Matches", strong_count, help="Queries with >= 75% similarity")
+                with metric_col4:
+                    st.metric("Competitor Gaps", competitor_gap_count,
+                             help="Queries where competitors score 10%+ higher",
+                             delta=f"-{competitor_gap_count}" if competitor_gap_count > 0 else None,
+                             delta_color="inverse")
+            else:
+                metric_col1, metric_col2, metric_col3 = st.columns(3)
+                with metric_col1:
+                    st.metric("Avg. Similarity", f"{avg_sim:.2%}")
+                with metric_col2:
+                    st.metric("Content Gaps", weak_count, help="Queries with < 60% similarity")
+                with metric_col3:
+                    st.metric("Strong Matches", strong_count, help="Queries with >= 75% similarity")
 
             st.markdown("---")
 
