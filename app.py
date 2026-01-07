@@ -263,32 +263,62 @@ def initialize_selenium_driver():
         return None
 
 def fetch_content_with_zyte(url, api_key):
-    """Fetches HTML content using Zyte API."""
+    """Fetches HTML content using Zyte API with JavaScript rendering enabled."""
     if not api_key:
         st.error("Zyte API key not configured.")
         return None
-    
+
     enforce_rate_limit()
-    st.write(f"_Fetching with Zyte API: {url}..._")
-    
+    st.write(f"_Fetching with Zyte API (JS rendering): {url}..._")
+
     try:
+        # Use browserHtml for JavaScript-rendered content (better for Shopify, React, etc.)
         response = requests.post(
             "https://api.zyte.com/v1/extract",
             auth=(api_key, ''),
-            json={'url': url, 'httpResponseBody': True},
-            timeout=45
+            json={
+                'url': url,
+                'browserHtml': True,  # Enables JavaScript rendering
+                'javascript': True,   # Ensure JS is executed
+                'actions': [
+                    # Wait for page to fully load
+                    {'action': 'waitForTimeout', 'timeout': 3000}
+                ]
+            },
+            timeout=60  # Longer timeout for JS rendering
         )
         response.raise_for_status()
-        
+
         data = response.json()
-        if data.get('httpResponseBody'):
+
+        # Try browserHtml first (JS-rendered), fall back to httpResponseBody
+        if data.get('browserHtml'):
+            st.write(f"_✓ Got JS-rendered HTML ({len(data['browserHtml'])} chars)_")
+            return data['browserHtml']
+        elif data.get('httpResponseBody'):
+            st.write(f"_⚠ Falling back to static HTML_")
             return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
         else:
             st.error(f"Zyte API did not return content for {url}")
             return None
-            
+
     except Exception as e:
         st.error(f"Zyte API error for {url}: {e}")
+        # Try fallback without JS rendering
+        try:
+            st.write(f"_Retrying without JS rendering..._")
+            response = requests.post(
+                "https://api.zyte.com/v1/extract",
+                auth=(api_key, ''),
+                json={'url': url, 'httpResponseBody': True},
+                timeout=45
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get('httpResponseBody'):
+                return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
+        except Exception as e2:
+            st.error(f"Zyte fallback also failed: {e2}")
         return None
 
 def fetch_content_with_selenium(url, driver_instance):
@@ -1141,3 +1171,4 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
 # Footer
 st.sidebar.divider()
 st.sidebar.info("🚀 AI Mode Query Fan-Out Analyzer v2.0")
+
