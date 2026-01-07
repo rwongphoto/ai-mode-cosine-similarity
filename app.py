@@ -263,62 +263,34 @@ def initialize_selenium_driver():
         return None
 
 def fetch_content_with_zyte(url, api_key):
-    """Fetches HTML content using Zyte API with JavaScript rendering enabled."""
+    """Fetches HTML content using Zyte API."""
     if not api_key:
         st.error("Zyte API key not configured.")
         return None
 
     enforce_rate_limit()
-    st.write(f"_Fetching with Zyte API (JS rendering): {url}..._")
+    st.write(f"_Fetching with Zyte API: {url}..._")
 
     try:
-        # Use browserHtml for JavaScript-rendered content (better for Shopify, React, etc.)
         response = requests.post(
             "https://api.zyte.com/v1/extract",
             auth=(api_key, ''),
-            json={
-                'url': url,
-                'browserHtml': True,  # Enables JavaScript rendering
-                'javascript': True,   # Ensure JS is executed
-                'actions': [
-                    # Wait for page to fully load
-                    {'action': 'waitForTimeout', 'timeout': 3000}
-                ]
-            },
-            timeout=60  # Longer timeout for JS rendering
+            json={'url': url, 'httpResponseBody': True},
+            timeout=45
         )
         response.raise_for_status()
 
         data = response.json()
-
-        # Try browserHtml first (JS-rendered), fall back to httpResponseBody
-        if data.get('browserHtml'):
-            st.write(f"_✓ Got JS-rendered HTML ({len(data['browserHtml'])} chars)_")
-            return data['browserHtml']
-        elif data.get('httpResponseBody'):
-            st.write(f"_⚠ Falling back to static HTML_")
-            return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
+        if data.get('httpResponseBody'):
+            html_content = base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
+            st.write(f"_✓ Got HTML ({len(html_content)} chars)_")
+            return html_content
         else:
             st.error(f"Zyte API did not return content for {url}")
             return None
 
     except Exception as e:
         st.error(f"Zyte API error for {url}: {e}")
-        # Try fallback without JS rendering
-        try:
-            st.write(f"_Retrying without JS rendering..._")
-            response = requests.post(
-                "https://api.zyte.com/v1/extract",
-                auth=(api_key, ''),
-                json={'url': url, 'httpResponseBody': True},
-                timeout=45
-            )
-            response.raise_for_status()
-            data = response.json()
-            if data.get('httpResponseBody'):
-                return base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
-        except Exception as e2:
-            st.error(f"Zyte fallback also failed: {e2}")
         return None
 
 def fetch_content_with_selenium(url, driver_instance):
@@ -360,8 +332,8 @@ def split_text_into_sentences(text):
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
 
-def extract_structural_passages_with_full_text(html_content):
-    if not html_content: 
+def extract_structural_passages_with_full_text(html_content, chunk_size=500):
+    if not html_content:
         return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
     
@@ -494,9 +466,66 @@ def extract_structural_passages_with_full_text(html_content):
     # Include image alt texts as additional passages (valuable for gallery pages)
     merged_passages.extend(image_alt_texts)
 
-    final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
+    # Clean all passages
+    cleaned_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
+
+    # Chunk passages by character count (~500 chars per chunk, similar to LLM chunking)
+    chunked_passages = chunk_passages_by_size(cleaned_passages, target_chunk_size=chunk_size)
+
     full_text = clean_text_for_display(soup.get_text(separator=' '))
-    return final_passages, full_text
+    return chunked_passages, full_text
+
+
+def chunk_passages_by_size(passages, target_chunk_size=500, min_chunk_size=100):
+    """
+    Groups small passages together into larger chunks of approximately target_chunk_size characters.
+    Keeps larger passages intact. This improves semantic similarity for galleries/product listings.
+    """
+    if not passages:
+        return []
+
+    chunked = []
+    current_chunk = []
+    current_size = 0
+
+    for passage in passages:
+        passage_len = len(passage)
+
+        # If this single passage is already large enough, flush current chunk and add it separately
+        if passage_len >= target_chunk_size:
+            # First, flush any accumulated small passages
+            if current_chunk:
+                chunked.append(" | ".join(current_chunk))
+                current_chunk = []
+                current_size = 0
+            # Add the large passage as its own chunk
+            chunked.append(passage)
+        else:
+            # Small passage - accumulate into current chunk
+            current_chunk.append(passage)
+            current_size += passage_len + 3  # +3 for " | " separator
+
+            # If current chunk is large enough, flush it
+            if current_size >= target_chunk_size:
+                chunked.append(" | ".join(current_chunk))
+                current_chunk = []
+                current_size = 0
+
+    # Don't forget any remaining passages in the current chunk
+    if current_chunk:
+        # If it's too small and we have previous chunks, try to merge with the last one
+        remaining_text = " | ".join(current_chunk)
+        if len(remaining_text) < min_chunk_size and chunked:
+            # Merge with last chunk if combined size is reasonable
+            last_chunk = chunked[-1]
+            if len(last_chunk) + len(remaining_text) < target_chunk_size * 1.5:
+                chunked[-1] = last_chunk + " | " + remaining_text
+            else:
+                chunked.append(remaining_text)
+        else:
+            chunked.append(remaining_text)
+
+    return chunked
 
 def add_sentence_overlap_to_passages(structural_passages, overlap_count=2):
     if not structural_passages or overlap_count == 0: 
@@ -816,8 +845,16 @@ else:
 
 if analysis_granularity.startswith("Passage"):
     st.sidebar.subheader("Passage Context Settings")
+    chunk_size_val = st.sidebar.slider(
+        "Chunk Size (characters):",
+        200, 1000, 500,
+        step=100,
+        help="Groups small passages (like gallery captions, product titles) into chunks of this size. ~500 chars is optimal for embedding models.",
+        disabled=st.session_state.processing
+    )
     s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 5, 2, help="Adds context from neighboring passages for better similarity calculation.", disabled=st.session_state.processing)
-else: 
+else:
+    chunk_size_val = 500
     s_overlap_val = 0
 
 analyze_disabled = not (st.session_state.gemini_api_configured or st.session_state.openai_api_configured)
@@ -926,13 +963,13 @@ if st.session_state.processing:
                 
                 # Extract text units based on granularity
                 if analysis_granularity.startswith("Sentence"):
-                    _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
+                    _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting, chunk_size=chunk_size_val)
                     units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
                     units_for_embedding = units_for_display
-                else: 
-                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
+                else:
+                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting, chunk_size=chunk_size_val)
                     units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
-                    if not units_for_display and page_text_for_highlight: 
+                    if not units_for_display and page_text_for_highlight:
                         units_for_display = [page_text_for_highlight]
 
                 if not units_for_embedding: 
