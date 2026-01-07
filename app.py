@@ -335,9 +335,16 @@ def extract_structural_passages_with_full_text(html_content):
         return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Remove unwanted elements
-    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'figure', 'figcaption', 'menu', 'banner', 'dialog', 'img', 'svg']):
-        if el.name: 
+    # Extract image alt text before removing images (valuable for galleries)
+    image_alt_texts = []
+    for img in soup.find_all('img'):
+        alt = img.get('alt', '').strip()
+        if alt and len(alt.split()) >= 3:  # Only meaningful alt text
+            image_alt_texts.append(alt)
+
+    # Remove unwanted elements (keep figure/figcaption for gallery captions)
+    for el in soup(["script", "style", "noscript", "iframe", "link", "meta", 'nav', 'header', 'footer', 'aside', 'form', 'menu', 'banner', 'dialog', 'img', 'svg']):
+        if el.name:
             el.decompose()
     
     # Remove elements by selectors
@@ -350,28 +357,113 @@ def extract_structural_passages_with_full_text(html_content):
         except Exception: 
             pass
     
-    # Extract content from target tags
-    target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
-    content_elements = soup.find_all(target_tags)
+    # Extract content from semantic HTML tags first (including figcaption for gallery captions)
+    semantic_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table', 'article', 'section', 'figcaption']
+    content_elements = list(soup.find_all(semantic_tags))
+
+    # Also extract content from divs/spans with content-related classes (e-commerce, collection pages, etc.)
+    # BUT only if they don't contain semantic child elements (to avoid duplication)
+    content_selectors = [
+        # E-commerce / product content
+        "[class*='product']",
+        "[class*='item']",
+        "[class*='card']",
+        "[class*='listing']",
+        # Text content
+        "[class*='title']",
+        "[class*='name']",
+        "[class*='description']",
+        "[class*='content']",
+        "[class*='text']",
+        "[class*='hero']",
+        "[class*='collection']",
+        "[class*='category']",
+        "[class*='info']",
+        "[class*='detail']",
+        "[class*='summary']",
+        "[class*='body']",
+        "[class*='main']",
+        "[class*='rte']",  # Rich text editor content (common in Shopify)
+        # Gallery / image captions
+        "[class*='caption']",
+        "[class*='gallery']",
+        "[class*='photo']",
+        "[class*='image-title']",
+        "[class*='img-caption']",
+        "[class*='thumbnail']",
+        "[class*='thumb']",
+        "[class*='lightbox']",
+        "[class*='slide']",
+        "[class*='fig']",
+        "[data-caption]",
+        "[alt]",  # Image alt text often contains descriptions
+        # Data attributes
+        "[data-product]",
+        "[data-content]",
+        "[data-title]"
+    ]
+
+    for sel in content_selectors:
+        try:
+            for element in soup.select(sel):
+                # Skip if this element contains semantic child elements (they're already extracted)
+                has_semantic_children = element.find(semantic_tags)
+                if has_semantic_children:
+                    continue
+
+                # Get text from these content elements (leaf nodes or containers without semantic children)
+                text = element.get_text(separator=' ', strip=True)
+                if text and len(text.split()) > 2 and element not in content_elements:
+                    content_elements.append(element)
+        except Exception:
+            pass
+
+    # Deduplicate: remove elements that are ancestors/descendants of each other
+    # Keep the more specific (child) element when there's nesting
+    filtered_elements = []
+    for el in content_elements:
+        # Check if any other element in our list is a parent of this one
+        is_ancestor_in_list = False
+        for other_el in content_elements:
+            if other_el != el and el in other_el.descendants:
+                is_ancestor_in_list = True
+                break
+
+        # Only keep if no ancestor is already in the list (prefer children over parents)
+        if not is_ancestor_in_list:
+            filtered_elements.append(el)
+
+    # Final deduplication by element id
+    seen_elements = set()
+    unique_content_elements = []
+    for el in filtered_elements:
+        if id(el) not in seen_elements:
+            seen_elements.add(id(el))
+            unique_content_elements.append(el)
+    content_elements = unique_content_elements
+
     merged_passages = []
     i = 0
-    
+
     while i < len(content_elements):
         current_element = content_elements[i]
         current_text = current_element.get_text(separator=' ', strip=True)
-        
+
         # Merge headers with following content
         if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
             next_text = content_elements[i+1].get_text(separator=' ', strip=True)
             combined_text = f"{current_text}. {next_text}"
-            if combined_text.strip(): 
+            if combined_text.strip():
                 merged_passages.append(combined_text)
             i += 2
         else:
-            if current_text.strip(): 
+            if current_text.strip():
                 merged_passages.append(current_text)
             i += 1
     
+    # Include image alt texts as additional passages (valuable for gallery pages)
+    merged_passages.extend(image_alt_texts)
+
     final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
     full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
@@ -402,16 +494,108 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         return "<p>Could not generate highlighted HTML.</p>"
     
     soup = BeautifulSoup(html_content, 'html.parser')
-    tags_to_remove = ["script", "style", "noscript", "iframe", "link", "meta", "button", "a", "img", "svg", "video", "audio", "canvas", "figure", "figcaption", 'form', 'nav', 'header', 'footer', 'aside', 'menu', 'banner', 'dialog']
-    
+
+    # Extract image alt text before removing images
+    image_alt_parts = []
+    for img in soup.find_all('img'):
+        alt = img.get('alt', '').strip()
+        if alt and len(alt.split()) >= 3:
+            # Find score for this alt text
+            alt_score = unit_scores_map.get(alt, 0.5)
+            for unit_text, score in unit_scores_map.items():
+                if alt in unit_text or unit_text in alt:
+                    alt_score = max(alt_score, score)
+            color = "green" if alt_score >= 0.75 else "red" if alt_score < 0.60 else "inherit"
+            style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 0.5em; font-style: italic;"
+            image_alt_parts.append(f"<p style='{style}'>[Image: {alt}]</p>")
+
+    tags_to_remove = ["script", "style", "noscript", "iframe", "link", "meta", "button", "a", "img", "svg", "video", "audio", "canvas", 'form', 'nav', 'header', 'footer', 'aside', 'menu', 'banner', 'dialog']
+
     for tag in tags_to_remove:
-        for el in soup.find_all(tag): 
+        for el in soup.find_all(tag):
             el.decompose()
-    
+
     html_parts = []
-    target_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table']
-    
-    for element in soup.find_all(target_tags):
+    semantic_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table', 'article', 'section', 'figcaption']
+
+    # Collect elements from semantic tags
+    all_elements = list(soup.find_all(semantic_tags))
+
+    # Also collect content-related elements (e-commerce, collection pages, galleries, etc.)
+    # BUT only if they don't contain semantic child elements (to avoid duplication)
+    content_selectors = [
+        # E-commerce / product content
+        "[class*='product']",
+        "[class*='item']",
+        "[class*='card']",
+        "[class*='listing']",
+        # Text content
+        "[class*='title']",
+        "[class*='name']",
+        "[class*='description']",
+        "[class*='content']",
+        "[class*='text']",
+        "[class*='hero']",
+        "[class*='collection']",
+        "[class*='category']",
+        "[class*='info']",
+        "[class*='detail']",
+        "[class*='summary']",
+        "[class*='body']",
+        "[class*='main']",
+        "[class*='rte']",
+        # Gallery / image captions
+        "[class*='caption']",
+        "[class*='gallery']",
+        "[class*='photo']",
+        "[class*='image-title']",
+        "[class*='img-caption']",
+        "[class*='thumbnail']",
+        "[class*='thumb']",
+        "[class*='lightbox']",
+        "[class*='slide']",
+        "[class*='fig']",
+        "[data-caption]",
+        # Data attributes
+        "[data-product]",
+        "[data-content]",
+        "[data-title]"
+    ]
+    for sel in content_selectors:
+        try:
+            for element in soup.select(sel):
+                # Skip if this element contains semantic child elements
+                has_semantic_children = element.find(semantic_tags)
+                if has_semantic_children:
+                    continue
+
+                text = element.get_text(separator=' ', strip=True)
+                if text and len(text.split()) > 2 and element not in all_elements:
+                    all_elements.append(element)
+        except Exception:
+            pass
+
+    # Deduplicate: remove elements that are ancestors/descendants of each other
+    filtered_elements = []
+    for el in all_elements:
+        is_ancestor_in_list = False
+        for other_el in all_elements:
+            if other_el != el and el in other_el.descendants:
+                is_ancestor_in_list = True
+                break
+        if not is_ancestor_in_list:
+            filtered_elements.append(el)
+
+    # Final deduplication by element id
+    seen_ids = set()
+    unique_elements = []
+    for el in filtered_elements:
+        if id(el) not in seen_ids:
+            seen_ids.add(id(el))
+            unique_elements.append(el)
+    all_elements = unique_elements
+
+    for element in all_elements:
         element_text = clean_text_for_display(element.get_text(separator=' '))
         passage_score = 0.5  # Default score
         
@@ -461,9 +645,14 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         if element.name in ['ul', 'ol']:
             list_items_html = "".join([f"<li>{clean_text_for_display(li.get_text())}</li>" for li in element.find_all('li')])
             html_parts.append(f"<{element.name} style='{style}'>{list_items_html}</{element.name}>")
-        else: 
+        else:
             html_parts.append(f"<{element.name} style='{style}'>{element_text}</{element.name}>")
-    
+
+    # Append image alt text passages at the end (for gallery pages)
+    if image_alt_parts:
+        html_parts.append("<h4 style='margin-top: 2em; color: #666;'>Image Descriptions:</h4>")
+        html_parts.extend(image_alt_parts)
+
     return "".join(html_parts)
 
 def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
