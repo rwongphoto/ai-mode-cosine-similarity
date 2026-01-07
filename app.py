@@ -733,8 +733,108 @@ def get_sentence_highlighted_html_flat(page_text_content, unit_scores_map):
     
     return highlighted_html
 
+def generate_seo_recommendations(url, analysis_results, processed_units_data):
+    """
+    Uses Gemini to generate SEO/AI Search recommendations based on the similarity analysis results.
+    """
+    if not st.session_state.get("gemini_api_configured", False):
+        st.error("Gemini API not configured for recommendations.")
+        return None
+
+    # Prepare analysis summary for Gemini
+    url_metrics = [m for m in analysis_results if m["URL"] == url]
+    if not url_metrics:
+        return None
+
+    # Get overall scores
+    avg_overall_sim = np.mean([m["Overall Similarity (Weighted)"] for m in url_metrics])
+    avg_max_sim = np.mean([m["Max Unit Sim."] for m in url_metrics])
+
+    # Identify weak and strong queries
+    weak_queries = [(m["Query"], m["Overall Similarity (Weighted)"], m["Max Similarity Passage"])
+                    for m in url_metrics if m["Overall Similarity (Weighted)"] < 0.6]
+    strong_queries = [(m["Query"], m["Overall Similarity (Weighted)"], m["Max Similarity Passage"])
+                      for m in url_metrics if m["Overall Similarity (Weighted)"] >= 0.75]
+
+    # Get content passages for context
+    content_passages = []
+    if url in processed_units_data:
+        units = processed_units_data[url].get("units", [])
+        unit_sims = processed_units_data[url].get("unit_similarities")
+        if unit_sims is not None and len(units) > 0:
+            # Get average similarity for each passage across all queries
+            avg_passage_sims = np.mean(unit_sims, axis=1)
+            # Get top and bottom passages
+            sorted_indices = np.argsort(avg_passage_sims)
+            bottom_passages = [(units[i], avg_passage_sims[i]) for i in sorted_indices[:5] if i < len(units)]
+            top_passages = [(units[i], avg_passage_sims[i]) for i in sorted_indices[-5:] if i < len(units)]
+            content_passages = {"top": top_passages, "bottom": bottom_passages}
+
+    # Build prompt for Gemini
+    prompt = f"""You are an expert SEO consultant specializing in AI Search optimization (Google AI Overviews, ChatGPT Search, Perplexity, etc.).
+
+Analyze this content similarity report and provide actionable SEO recommendations.
+
+## Target URL
+{url}
+
+## Overall Performance
+- Average Similarity Score: {avg_overall_sim:.3f} (scale 0-1, higher is better)
+- Average Best-Match Score: {avg_max_sim:.3f}
+
+## Queries with WEAK Content Coverage (< 0.6 similarity):
+"""
+
+    if weak_queries:
+        for query, score, passage in weak_queries[:10]:
+            prompt += f"\n- Query: \"{query}\" (Score: {score:.3f})"
+            if passage:
+                prompt += f"\n  Best matching content: \"{passage[:200]}...\""
+    else:
+        prompt += "\nNo significant content gaps detected."
+
+    prompt += "\n\n## Queries with STRONG Content Coverage (>= 0.75 similarity):\n"
+
+    if strong_queries:
+        for query, score, passage in strong_queries[:10]:
+            prompt += f"\n- Query: \"{query}\" (Score: {score:.3f})"
+    else:
+        prompt += "\nNo queries with strong coverage detected."
+
+    if content_passages:
+        prompt += "\n\n## Lowest Scoring Content Passages (potential improvement areas):\n"
+        for passage, score in content_passages.get("bottom", []):
+            prompt += f"\n- (Score: {score:.3f}) \"{passage[:300]}...\"\n"
+
+        prompt += "\n\n## Highest Scoring Content Passages (strengths to maintain):\n"
+        for passage, score in content_passages.get("top", []):
+            prompt += f"\n- (Score: {score:.3f}) \"{passage[:300]}...\"\n"
+
+    prompt += """
+
+## Your Task
+Provide specific, actionable SEO recommendations to improve this page's visibility in AI Search results. Focus on:
+
+1. **Content Gaps**: What topics or information should be added to better answer the weak queries?
+2. **Content Structure**: How can the existing content be restructured for better AI understanding?
+3. **Semantic Coverage**: What related concepts, entities, or long-tail variations are missing?
+4. **AI Search Optimization**: Specific tips for appearing in AI Overviews, featured snippets, and conversational AI results.
+5. **Quick Wins**: 3-5 immediate changes that could improve scores.
+
+Format your response with clear headers and bullet points. Be specific and reference the actual queries and content where relevant.
+"""
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-pro")
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        st.error(f"Gemini recommendation generation failed: {e}")
+        return None
+
+
 def generate_synthetic_queries(user_query, num_queries=7):
-    if not st.session_state.get("gemini_api_configured", False): 
+    if not st.session_state.get("gemini_api_configured", False):
         st.error("Gemini API not configured for query generation.")
         return []
     
@@ -1204,6 +1304,89 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                             st.markdown(f"**#{len(scored_units)-n_val+i+1} - Score: {u_s:.3f}**")
                             st.markdown(f"> {u_t}")
                             st.divider()
+
+# --- SEO Recommendations Section ---
+if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
+    st.markdown("---")
+    st.subheader("🎯 AI-Powered SEO Recommendations")
+
+    if not st.session_state.get("gemini_api_configured", False):
+        st.warning("Gemini API required for SEO recommendations. Please configure your Gemini API key in the sidebar.")
+    else:
+        # Allow user to select which URL to get recommendations for
+        available_urls = list(st.session_state.url_processed_units_dict.keys())
+
+        if len(available_urls) == 1:
+            selected_url_for_recs = available_urls[0]
+            st.markdown(f"**Target URL:** `{selected_url_for_recs}`")
+        else:
+            selected_url_for_recs = st.selectbox(
+                "Select URL for SEO Recommendations:",
+                options=available_urls,
+                key="seo_rec_url_select"
+            )
+
+        # Initialize session state for recommendations
+        if "seo_recommendations" not in st.session_state:
+            st.session_state.seo_recommendations = {}
+
+        col_rec1, col_rec2 = st.columns([1, 4])
+
+        with col_rec1:
+            generate_recs = st.button(
+                "🚀 Generate Recommendations",
+                key="gen_seo_recs_btn",
+                type="primary",
+                help="Uses Gemini to analyze your content gaps and provide actionable SEO recommendations"
+            )
+
+        with col_rec2:
+            if selected_url_for_recs in st.session_state.seo_recommendations:
+                if st.button("🔄 Regenerate", key="regen_seo_recs_btn"):
+                    generate_recs = True
+
+        if generate_recs:
+            with st.spinner("Analyzing content and generating SEO recommendations..."):
+                recommendations = generate_seo_recommendations(
+                    url=selected_url_for_recs,
+                    analysis_results=st.session_state.all_url_metrics_list,
+                    processed_units_data=st.session_state.url_processed_units_dict
+                )
+                if recommendations:
+                    st.session_state.seo_recommendations[selected_url_for_recs] = recommendations
+
+        # Display recommendations if available
+        if selected_url_for_recs in st.session_state.seo_recommendations:
+            recommendations = st.session_state.seo_recommendations[selected_url_for_recs]
+
+            # Calculate summary stats for context
+            url_metrics = [m for m in st.session_state.all_url_metrics_list if m["URL"] == selected_url_for_recs]
+            avg_sim = np.mean([m["Overall Similarity (Weighted)"] for m in url_metrics]) if url_metrics else 0
+            weak_count = len([m for m in url_metrics if m["Overall Similarity (Weighted)"] < 0.6])
+            strong_count = len([m for m in url_metrics if m["Overall Similarity (Weighted)"] >= 0.75])
+
+            # Summary metrics
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            with metric_col1:
+                st.metric("Avg. Similarity", f"{avg_sim:.2%}")
+            with metric_col2:
+                st.metric("Content Gaps", weak_count, help="Queries with < 60% similarity")
+            with metric_col3:
+                st.metric("Strong Matches", strong_count, help="Queries with >= 75% similarity")
+
+            st.markdown("---")
+
+            # Display the recommendations
+            with st.container():
+                st.markdown(recommendations)
+
+            # Download button for recommendations
+            st.download_button(
+                label="📥 Download Recommendations",
+                data=f"# SEO Recommendations for {selected_url_for_recs}\n\n{recommendations}",
+                file_name=f"seo_recommendations_{selected_url_for_recs.replace('https://', '').replace('/', '_')[:50]}.md",
+                mime="text/markdown"
+            )
 
 # Footer
 st.sidebar.divider()
