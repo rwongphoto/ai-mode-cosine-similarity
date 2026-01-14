@@ -919,28 +919,69 @@ def generate_synthetic_queries(user_query, num_queries=7):
     if not st.session_state.get("gemini_api_configured", False):
         st.error("Gemini API not configured for query generation.")
         return []
-    
+
     model = genai.GenerativeModel("gemini-2.5-pro")
     prompt = f"""
-    Based on the user's initial search query: "{user_query}"
-    Generate {num_queries} diverse synthetic search queries using the "Query Fan Out" technique. These queries should explore different facets, intents, or related concepts. Aim for a mix of the following query types, ensuring variety:
-    
-    1. Related Queries: Queries on closely associated topics or entities.
-    2. Implicit Queries: Queries that unearth underlying assumptions or unstated needs related to the original query.
-    3. Comparative Queries: Queries that seek to compare aspects of the original query's subject with alternatives.
-    4. Recent Queries: Logical next steps or follow-up queries someone might search for.
-    5. Personalized Queries: How the query might be personalized for different user contexts.
-    6. Reformulation Queries: Different ways of phrasing the original query.
-    7. Entity-Expanded Queries: Queries that broaden scope by including related entities.
-    
-    CRITICAL INSTRUCTIONS:
-    - Ensure queries span multiple categories above for semantic diversity
-    - Make queries distinct and aimed at retrieving diverse content types
-    - Do NOT number queries or add prefixes like "Query 1:"
-    - Return ONLY a Python-parseable list of strings
-    - Example format: ["synthetic query 1", "another synthetic query", "a third query"]
-    - Each query should be complete and self-contained
-    """
+Here are the 9 query variant types - SELECT ONLY THE TYPES THAT MAKE SENSE for this specific query:
+
+1. **Equivalent Query**: Alternative phrasing for the same question
+   Use when: The query can be rephrased in meaningfully different ways
+   Example: "did roger moore drive an aston martin" → "what car did roger moore drive"
+
+2. **Follow-up Query**: Logical next questions that build on the original
+   Use when: There are natural follow-up questions users would ask
+   Example: "did da vinci paint mona lisa" → "who commissioned da vinci to paint mona lisa"
+
+3. **Conversational Follow-up**: Natural conversational questions a user would ask AI after getting an initial answer
+   Use when: Simulating AI Mode multi-turn conversations
+   Examples:
+   - "abstract nature photography" → "how do I get started with that?" / "what equipment do I need?" / "can you show me some examples?"
+   - "best hiking trails" → "which one is easiest for beginners?" / "what should I bring?"
+   - "solar panels" → "are they worth it?" / "how long do they last?"
+
+4. **Generalization Query**: Broader versions of the specific question
+   Use when: The query is specific and can be broadened meaningfully
+   Example: "best Italian restaurants in Manhattan" → "best restaurants in New York City"
+
+5. **Specification Query**: More detailed or specific versions
+   Use when: The query is broad and can be made more specific
+   Example: "climate change" → "climate change effects on coastal cities"
+
+6. **Canonicalization Query**: Standardized or normalized phrasing
+   Use when: The query uses informal language, slang, or non-standard terms
+   Example: "how to get rid of belly fat fast" → "abdominal fat reduction methods"
+
+7. **Entailment Query**: Questions about consequences, prerequisites, or implied facts
+   Use when: There are logical implications or related facts worth exploring
+   Example: "solar panel installation" → "solar panel maintenance requirements"
+
+8. **Clarification Query**: Queries addressing different possible meanings or intents
+   Use when: The query could have multiple interpretations
+   Example: "apple" → "apple fruit nutrition" OR "apple iphone features"
+
+9. **Related Entity Query**: Queries about related entities, people, or concepts
+   Use when: There are closely related topics that provide useful context
+   Example: "iPhone 15 features" → "smartphone comparison 2024"
+
+Original Query: "{user_query}"
+
+IMPORTANT RULES:
+- First variation MUST be the original query exactly as written
+- Include at least 2-3 CONVERSATIONAL follow-ups (type 3) - these simulate how users interact with AI Mode
+- Only use variant types that are relevant and useful for THIS specific query
+- Skip variant types that would produce awkward or unhelpful variations
+- Each variation should be a realistic query that a user might actually type or ask an AI
+- Avoid redundant variations - each should explore a meaningfully different angle
+- Focus on variations that would help assess comprehensive content coverage
+
+Generate {num_queries} query variations total (including the original query as the first one).
+
+CRITICAL INSTRUCTIONS:
+- Do NOT number queries or add prefixes like "Query 1:" or labels like "[Equivalent Query]"
+- Return ONLY a Python-parseable list of strings
+- Example format: ["original query here", "conversational follow-up", "another variation"]
+- Each query should be complete and self-contained
+"""
     
     try:
         response = model.generate_content(prompt)
@@ -1502,5 +1543,5 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
 
 # Footer
 st.sidebar.divider()
-st.sidebar.info("🚀 AI Mode Query Fan-Out Analyzer v2.0")
+st.sidebar.info("🚀 AI Mode Query Fan-Out Analyzer v3.1")
 
