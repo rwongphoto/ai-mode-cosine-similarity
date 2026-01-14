@@ -1134,8 +1134,9 @@ if st.session_state.processing:
         
         if not synthetic_queries:
             st.warning("No synthetic queries generated. Continuing with initial query only.")
-        
-        local_all_queries = [f"Initial: {initial_query_val}"] + (synthetic_queries or [])
+            synthetic_queries = [initial_query_val]
+
+        local_all_queries = synthetic_queries
         
         # Embed all queries
         with st.spinner("Computing query embeddings..."): 
@@ -1273,10 +1274,10 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     # Display all queries in a clean format
     query_display = []
     for i, query in enumerate(st.session_state.all_queries_for_analysis):
-        if query.startswith("Initial: "):
-            query_display.append(f"🎯 **Initial Query:** {query.replace('Initial: ', '')}")
+        if i == 0:
+            query_display.append(f"🎯 **Original Query:** {query}")
         else:
-            query_display.append(f"🔄 **Synthetic {i}:** {query}")
+            query_display.append(f"🔄 **Variation {i}:** {query}")
     
     with st.expander("View All Generated Queries", expanded=False):
         for q in query_display:
@@ -1354,7 +1355,8 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             all_queries = st.session_state.all_queries_for_analysis
             
             # Create heatmap
-            short_queries = [q.replace("Initial: ", "(I) ")[:40] + ('...' if len(q) > 40 else '') for q in all_queries]
+            short_queries = [f"(O) {q[:37]}" if i == 0 else q[:40] for i, q in enumerate(all_queries)]
+            short_queries = [q + ('...' if len(all_queries[i]) > (37 if i == 0 else 40) else '') for i, q in enumerate(short_queries)]
             unit_labels = [f"{unit_label[0]}{i+1}" for i in range(len(units))]
             
             # Create hover text for heatmap
@@ -1399,7 +1401,7 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
             if selected_query:
                 query_idx = st.session_state.all_queries_for_analysis.index(selected_query)
                 scored_units = sorted(zip(p_data["units"], unit_sims[:, query_idx]), key=lambda item: item[1], reverse=True)
-                query_display_name = selected_query.replace("Initial: ", "(Initial) ")
+                query_display_name = f"(Original) {selected_query}" if query_idx == 0 else selected_query
                 
                 col1, col2 = st.columns(2)
                 
