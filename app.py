@@ -934,10 +934,11 @@ Here are the 9 query variant types - SELECT ONLY THE TYPES THAT MAKE SENSE for t
 
 3. **Conversational Follow-up**: Natural conversational questions a user would ask AI after getting an initial answer
    Use when: Simulating AI Mode multi-turn conversations
+   IMPORTANT: Always include the topic/subject in the query for context (needed for semantic similarity matching)
    Examples:
-   - "abstract nature photography" → "how do I get started with that?" / "what equipment do I need?" / "can you show me some examples?"
-   - "best hiking trails" → "which one is easiest for beginners?" / "what should I bring?"
-   - "solar panels" → "are they worth it?" / "how long do they last?"
+   - "abstract nature photography" → "how do I get started with abstract nature photography?" / "what equipment do I need for nature photography?" / "can you show me some abstract nature photography examples?"
+   - "best hiking trails" → "which hiking trails are easiest for beginners?" / "what should I bring on a hiking trail?"
+   - "solar panels" → "are solar panels worth it?" / "how long do solar panels last?"
 
 4. **Generalization Query**: Broader versions of the specific question
    Use when: The query is specific and can be broadened meaningfully
