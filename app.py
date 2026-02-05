@@ -1243,82 +1243,93 @@ if st.session_state.processing:
                 st.session_state.selenium_driver_instance = initialize_selenium_driver()
         
         # Generate synthetic queries
-        with st.spinner("Generating synthetic queries..."): 
+        t0 = time.time()
+        with st.spinner("Generating synthetic queries..."):
             synthetic_queries = generate_synthetic_queries(initial_query_val, num_sq_val)
-        
+        t_queries = time.time() - t0
+
         if not synthetic_queries:
             st.warning("No synthetic queries generated. Continuing with initial query only.")
             synthetic_queries = [initial_query_val]
 
         local_all_queries = synthetic_queries
-        
+        st.write(f"_Generated {len(local_all_queries)} queries ({t_queries:.1f}s)_")
+
         # Embed all queries
-        with st.spinner("Computing query embeddings..."): 
-            local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
-        
+        t0 = time.time()
+        local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
+        t_q_emb = time.time() - t0
+        st.write(f"_Query embeddings ({t_q_emb:.1f}s)_")
+
         if local_all_query_embs.size == 0:
             st.error("Query embedding failed. Please check your API configuration.")
             st.stop()
-        
+
         initial_query_embedding = local_all_query_embs[0]
-        
+
         # Fetch content
         local_all_metrics = []
         local_processed_units_data = {}
         fetched_content = {}
-        
+
         if input_mode == "Analyze URLs":
+            t0 = time.time()
             with st.spinner(f"Fetching content from {len(jobs)} URL(s)..."):
                 for job in jobs:
                     url = job['identifier']
                     method = st.session_state.get("scraping_method", "Requests (lightweight)")
-                    
+
                     if method.startswith("Zyte"):
                         fetched_content[url] = fetch_content_with_zyte(url, st.session_state.zyte_api_key_to_persist)
                     elif method.startswith("Selenium"):
                         fetched_content[url] = fetch_content_with_selenium(url, st.session_state.selenium_driver_instance)
-                    else: 
+                    else:
                         fetched_content[url] = fetch_content_with_requests(url)
+            st.write(f"_Fetched {len(jobs)} URL(s) ({time.time() - t0:.1f}s)_")
 
             # Clean up Selenium
             if st.session_state.selenium_driver_instance:
                 st.session_state.selenium_driver_instance.quit()
                 st.session_state.selenium_driver_instance = None
-        else: 
+        else:
             fetched_content[jobs[0]['identifier']] = jobs[0]['content']
 
         # Process content
-        with st.spinner(f"Processing {len(fetched_content)} content source(s)..."):
-            for identifier, content in fetched_content.items():
-                st.markdown(f"**Processing:** `{identifier}`")
-                
-                if not content or len(content.strip()) < 20: 
-                    st.warning(f"Insufficient content from {identifier}. Skipping.")
-                    continue
-                
-                # Determine if this is HTML content
-                is_url_source = any(job['identifier'] == identifier for job in jobs if job['type'] == 'url')
-                raw_html_for_highlighting = content if is_url_source else "".join([f"<p>{clean_text_for_display(p)}</p>" for p in content.split('\n\n')])
-                
-                # Extract text units based on granularity
-                if analysis_granularity.startswith("Sentence"):
-                    _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
-                    units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
-                    units_for_embedding = units_for_display
-                else:
-                    units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
-                    units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
-                    if not units_for_display and page_text_for_highlight:
-                        units_for_display = [page_text_for_highlight]
+        for identifier, content in fetched_content.items():
+            st.markdown(f"**Processing:** `{identifier}`")
 
-                if not units_for_embedding: 
-                    st.warning(f"No processable content units found for {identifier}. Skipping.")
-                    continue
-                
-                st.write(f"Found {len(units_for_embedding)} content units")
-                
-                # Generate embeddings for content units
-                unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
+            if not content or len(content.strip()) < 20:
+                st.warning(f"Insufficient content from {identifier}. Skipping.")
+                continue
+
+            # Determine if this is HTML content
+            is_url_source = any(job['identifier'] == identifier for job in jobs if job['type'] == 'url')
+            raw_html_for_highlighting = content if is_url_source else "".join([f"<p>{clean_text_for_display(p)}</p>" for p in content.split('\n\n')])
+
+            # Extract text units based on granularity
+            t0 = time.time()
+            if analysis_granularity.startswith("Sentence"):
+                _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
+                units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
+                units_for_embedding = units_for_display
+            else:
+                units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
+                units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
+                if not units_for_display and page_text_for_highlight:
+                    units_for_display = [page_text_for_highlight]
+            t_extract = time.time() - t0
+
+            if not units_for_embedding:
+                st.warning(f"No processable content units found for {identifier}. Skipping.")
+                continue
+
+            st.write(f"_Extracted {len(units_for_embedding)} content units ({t_extract:.1f}s)_")
+
+            # Generate embeddings for content units
+            t0 = time.time()
+            unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
+            t_emb = time.time() - t0
+            st.write(f"_Content embeddings ({t_emb:.1f}s){" [cached]" if t_emb < 0.1 else ""}_")
                 
                 # Store processed data
                 local_processed_units_data[identifier] = {
