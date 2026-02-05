@@ -406,9 +406,34 @@ def extract_structural_passages_with_full_text(html_content):
         except Exception: 
             pass
     
+    # --- FAQ / Accordion detection: keep Q+A pairs together as single passages ---
+    faq_handled_ids = set()
+    faq_passages = []
+    faq_item_selectors = [
+        ".panel.panel-default",                              # Bootstrap accordion items
+        "[class*='faq-item']", "[class*='faq_item']", "[class*='faqitem']",
+        "[class*='accordion-item']", "[class*='accordion_item']",
+        "details",                                           # HTML5 disclosure elements
+        "[itemtype*='Question']",                            # Schema.org FAQ markup
+    ]
+    for sel in faq_item_selectors:
+        try:
+            for element in soup.select(sel):
+                if id(element) in faq_handled_ids:
+                    continue
+                text = element.get_text(separator=' ', strip=True)
+                if text and len(text.split()) > 5:
+                    faq_passages.append(text)
+                    # Mark element + all tag descendants as handled
+                    faq_handled_ids.add(id(element))
+                    for desc in element.find_all(True):
+                        faq_handled_ids.add(id(desc))
+        except Exception:
+            pass
+
     # Extract content from semantic HTML tags first (including figcaption for gallery captions)
     semantic_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table', 'article', 'section', 'figcaption']
-    content_elements = list(soup.find_all(semantic_tags))
+    content_elements = [el for el in soup.find_all(semantic_tags) if id(el) not in faq_handled_ids]
 
     # Also extract content from divs/spans with content-related classes (e-commerce, collection pages, etc.)
     # BUT only if they don't contain semantic child elements (to avoid duplication)
@@ -458,6 +483,9 @@ def extract_structural_passages_with_full_text(html_content):
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
+                # Skip elements already handled as FAQ/accordion items
+                if id(element) in faq_handled_ids:
+                    continue
                 # Skip if this element contains semantic child elements (they're already extracted)
                 has_semantic_children = element.find(semantic_tags)
                 if has_semantic_children:
@@ -523,12 +551,13 @@ def extract_structural_passages_with_full_text(html_content):
 
     # Clean passages
     clean_structural = [clean_text_for_display(p) for p in structural_passages if p and len(p.split()) > 2]
+    clean_faq = [clean_text_for_display(p) for p in faq_passages if p and len(p.split()) > 5]
     clean_gallery = [clean_text_for_display(p) for p in gallery_passages if p and len(p.split()) > 2]
 
     # Chunk gallery/listing items into ~400 char groups
     chunked_gallery = _chunk_gallery_items(clean_gallery, target_size=400)
 
-    final_passages = clean_structural + chunked_gallery
+    final_passages = clean_structural + clean_faq + chunked_gallery
     full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
 
