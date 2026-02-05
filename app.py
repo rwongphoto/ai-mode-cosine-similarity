@@ -1329,54 +1329,55 @@ if st.session_state.processing:
             t0 = time.time()
             unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
             t_emb = time.time() - t0
-            st.write(f"_Content embeddings ({t_emb:.1f}s){" [cached]" if t_emb < 0.1 else ""}_")
-                
-                # Store processed data
-                local_processed_units_data[identifier] = {
-                    "units": units_for_display, 
-                    "embeddings": unit_embeddings, 
-                    "unit_similarities": None, 
-                    "page_text_for_highlight": page_text_for_highlight, 
-                    "raw_html": raw_html_for_highlighting
-                }
-                
-                # Calculate similarities
-                if unit_embeddings.size > 0:
-                    # Calculate similarity to initial query for weighting
-                    unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
-                    weights = np.maximum(0, unit_sims_to_initial)
-                    
-                    # Calculate weighted overall embedding
-                    if np.sum(weights) > 1e-6:
-                        weighted_overall_emb = np.average(unit_embeddings, axis=0, weights=weights).reshape(1, -1)
-                    else:
-                        weighted_overall_emb = np.mean(unit_embeddings, axis=0).reshape(1, -1)
-                    
-                    # Calculate overall similarities to all queries
-                    overall_sims = cosine_similarity(weighted_overall_emb, local_all_query_embs)[0]
-                    
-                    # Calculate unit-level similarities to all queries
-                    unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
-                    local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
-                    
-                    # Generate metrics for each query
-                    for sq_idx, query_text in enumerate(local_all_queries):
-                        current_q_unit_sims = unit_q_sims[:, sq_idx]
-                        max_sim_passage_text = ""
-                        
-                        if current_q_unit_sims.size > 0: 
-                            max_sim_idx = np.argmax(current_q_unit_sims)
-                            max_sim_passage_text = units_for_display[max_sim_idx]
-                        
-                        local_all_metrics.append({ 
-                            "URL": identifier, 
-                            "Query": query_text, 
-                            "Overall Similarity (Weighted)": overall_sims[sq_idx], 
-                            "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, 
-                            "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0, 
-                            "Num Units": len(units_for_display), 
-                            "Max Similarity Passage": max_sim_passage_text 
-                        })
+            cached_label = " [cached]" if t_emb < 0.1 else ""
+            st.write(f"_Content embeddings ({t_emb:.1f}s){cached_label}_")
+
+            # Store processed data
+            local_processed_units_data[identifier] = {
+                "units": units_for_display,
+                "embeddings": unit_embeddings,
+                "unit_similarities": None,
+                "page_text_for_highlight": page_text_for_highlight,
+                "raw_html": raw_html_for_highlighting
+            }
+
+            # Calculate similarities
+            if unit_embeddings.size > 0:
+                # Calculate similarity to initial query for weighting
+                unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
+                weights = np.maximum(0, unit_sims_to_initial)
+
+                # Calculate weighted overall embedding
+                if np.sum(weights) > 1e-6:
+                    weighted_overall_emb = np.average(unit_embeddings, axis=0, weights=weights).reshape(1, -1)
+                else:
+                    weighted_overall_emb = np.mean(unit_embeddings, axis=0).reshape(1, -1)
+
+                # Calculate overall similarities to all queries
+                overall_sims = cosine_similarity(weighted_overall_emb, local_all_query_embs)[0]
+
+                # Calculate unit-level similarities to all queries
+                unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
+                local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
+
+                # Generate metrics for each query
+                for sq_idx, query_text in enumerate(local_all_queries):
+                    current_q_unit_sims = unit_q_sims[:, sq_idx]
+                    max_sim_passage_text = ""
+
+                    if current_q_unit_sims.size > 0:
+                        max_sim_idx = np.argmax(current_q_unit_sims)
+                        max_sim_passage_text = units_for_display[max_sim_idx]
+
+                    local_all_metrics.append({
+                        "URL": identifier,
+                        "Query": query_text,
+                        "Overall Similarity (Weighted)": overall_sims[sq_idx],
+                        "Max Unit Sim.": np.max(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
+                        "Avg. Unit Sim.": np.mean(current_q_unit_sims) if current_q_unit_sims.size > 0 else 0.0,
+                        "Num Units": len(units_for_display),
+                        "Max Similarity Passage": max_sim_passage_text
+                    })
         
         # Save results
         if local_all_metrics:
