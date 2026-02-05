@@ -409,9 +409,12 @@ def extract_structural_passages_with_full_text(html_content, chunk_size=500):
         "[data-title]"
     ]
 
+    content_element_ids = {id(el) for el in content_elements}
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
+                if id(element) in content_element_ids:
+                    continue
                 # Skip if this element contains semantic child elements (they're already extracted)
                 has_semantic_children = element.find(semantic_tags)
                 if has_semantic_children:
@@ -419,34 +422,27 @@ def extract_structural_passages_with_full_text(html_content, chunk_size=500):
 
                 # Get text from these content elements (leaf nodes or containers without semantic children)
                 text = element.get_text(separator=' ', strip=True)
-                if text and len(text.split()) > 2 and element not in content_elements:
+                if text and len(text.split()) > 2:
                     content_elements.append(element)
+                    content_element_ids.add(id(element))
         except Exception:
             pass
 
-    # Deduplicate: remove elements that are ancestors/descendants of each other
-    # Keep the more specific (child) element when there's nesting
+    # Deduplicate: remove elements that have an ancestor already in the list
+    # Walk up the parent chain (O(n * depth)) instead of checking all descendants (O(n²))
+    element_id_set = {id(el) for el in content_elements}
     filtered_elements = []
     for el in content_elements:
-        # Check if any other element in our list is a parent of this one
-        is_ancestor_in_list = False
-        for other_el in content_elements:
-            if other_el != el and el in other_el.descendants:
-                is_ancestor_in_list = True
+        has_ancestor_in_list = False
+        parent = el.parent
+        while parent:
+            if id(parent) in element_id_set:
+                has_ancestor_in_list = True
                 break
-
-        # Only keep if no ancestor is already in the list (prefer children over parents)
-        if not is_ancestor_in_list:
+            parent = parent.parent
+        if not has_ancestor_in_list:
             filtered_elements.append(el)
-
-    # Final deduplication by element id
-    seen_elements = set()
-    unique_content_elements = []
-    for el in filtered_elements:
-        if id(el) not in seen_elements:
-            seen_elements.add(id(el))
-            unique_content_elements.append(el)
-    content_elements = unique_content_elements
+    content_elements = filtered_elements
 
     merged_passages = []
     i = 0
@@ -624,39 +620,38 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         "[data-content]",
         "[data-title]"
     ]
+    all_element_ids = {id(el) for el in all_elements}
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
+                if id(element) in all_element_ids:
+                    continue
                 # Skip if this element contains semantic child elements
                 has_semantic_children = element.find(semantic_tags)
                 if has_semantic_children:
                     continue
 
                 text = element.get_text(separator=' ', strip=True)
-                if text and len(text.split()) > 2 and element not in all_elements:
+                if text and len(text.split()) > 2:
                     all_elements.append(element)
+                    all_element_ids.add(id(element))
         except Exception:
             pass
 
-    # Deduplicate: remove elements that are ancestors/descendants of each other
+    # Deduplicate: remove elements that have an ancestor already in the list
+    element_id_set = {id(el) for el in all_elements}
     filtered_elements = []
     for el in all_elements:
-        is_ancestor_in_list = False
-        for other_el in all_elements:
-            if other_el != el and el in other_el.descendants:
-                is_ancestor_in_list = True
+        has_ancestor_in_list = False
+        parent = el.parent
+        while parent:
+            if id(parent) in element_id_set:
+                has_ancestor_in_list = True
                 break
-        if not is_ancestor_in_list:
+            parent = parent.parent
+        if not has_ancestor_in_list:
             filtered_elements.append(el)
-
-    # Final deduplication by element id
-    seen_ids = set()
-    unique_elements = []
-    for el in filtered_elements:
-        if id(el) not in seen_ids:
-            seen_ids.add(id(el))
-            unique_elements.append(el)
-    all_elements = unique_elements
+    all_elements = filtered_elements
 
     for element in all_elements:
         element_text = clean_text_for_display(element.get_text(separator=' '))
