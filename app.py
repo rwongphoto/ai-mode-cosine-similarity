@@ -264,10 +264,7 @@ def get_embeddings(texts, local_model_instance=None):
         if local_model_instance is None:
             st.error("Local embedding model not loaded.")
             return np.array([])
-        # Use smaller batches for large models to avoid memory thrashing
-        is_large_model = "mxbai" in model_choice or "large" in model_choice or "300m" in model_choice.lower()
-        batch = 8 if is_large_model else 32
-        result = local_model_instance.encode(texts_list, batch_size=batch, show_progress_bar=True)
+        result = local_model_instance.encode(texts_list)
 
     # Store in cache
     if result is not None and result.size > 0:
