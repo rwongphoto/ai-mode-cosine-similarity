@@ -471,27 +471,21 @@ def extract_structural_passages_with_full_text(html_content):
         except Exception:
             pass
 
-    # Deduplicate: remove elements that are ancestors/descendants of each other
-    # Keep the more specific (child) element when there's nesting
-    filtered_elements = []
+    # Deduplicate: remove ancestor containers, keep more specific child elements
+    # Uses efficient parent-chain walk: O(n * depth) instead of O(n^2 * descendants)
+    content_element_ids = set(id(el) for el in content_elements)
+    ancestors_to_remove = set()
     for el in content_elements:
-        # Check if any other element in our list is a parent of this one
-        is_ancestor_in_list = False
-        for other_el in content_elements:
-            if other_el != el and el in other_el.descendants:
-                is_ancestor_in_list = True
-                break
+        for parent in el.parents:
+            if id(parent) in content_element_ids and parent != el:
+                ancestors_to_remove.add(id(parent))
 
-        # Only keep if no ancestor is already in the list (prefer children over parents)
-        if not is_ancestor_in_list:
-            filtered_elements.append(el)
-
-    # Final deduplication by element id
     seen_elements = set()
     unique_content_elements = []
-    for el in filtered_elements:
-        if id(el) not in seen_elements:
-            seen_elements.add(id(el))
+    for el in content_elements:
+        el_id = id(el)
+        if el_id not in ancestors_to_remove and el_id not in seen_elements:
+            seen_elements.add(el_id)
             unique_content_elements.append(el)
     content_elements = unique_content_elements
 
@@ -645,23 +639,21 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         except Exception:
             pass
 
-    # Deduplicate: remove elements that are ancestors/descendants of each other
-    filtered_elements = []
+    # Deduplicate: remove ancestor containers, keep more specific child elements
+    # Uses efficient parent-chain walk: O(n * depth) instead of O(n^2 * descendants)
+    all_element_ids = set(id(el) for el in all_elements)
+    ancestors_to_remove = set()
     for el in all_elements:
-        is_ancestor_in_list = False
-        for other_el in all_elements:
-            if other_el != el and el in other_el.descendants:
-                is_ancestor_in_list = True
-                break
-        if not is_ancestor_in_list:
-            filtered_elements.append(el)
+        for parent in el.parents:
+            if id(parent) in all_element_ids and parent != el:
+                ancestors_to_remove.add(id(parent))
 
-    # Final deduplication by element id
     seen_ids = set()
     unique_elements = []
-    for el in filtered_elements:
-        if id(el) not in seen_ids:
-            seen_ids.add(id(el))
+    for el in all_elements:
+        el_id = id(el)
+        if el_id not in ancestors_to_remove and el_id not in seen_ids:
+            seen_ids.add(el_id)
             unique_elements.append(el)
     all_elements = unique_elements
 
