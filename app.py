@@ -42,10 +42,6 @@ if "zyte_api_key_to_persist" not in st.session_state: st.session_state.zyte_api_
 if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_configured = False
 if "huggingface_api_key_to_persist" not in st.session_state: st.session_state.huggingface_api_key_to_persist = ""
 if "huggingface_api_configured" not in st.session_state: st.session_state.huggingface_api_configured = False
-# Prompt Ranking feature state
-if "prompt_ranking_results" not in st.session_state: st.session_state.prompt_ranking_results = None
-if "prompt_ranking_done" not in st.session_state: st.session_state.prompt_ranking_done = False
-if "prompt_ranking_processing" not in st.session_state: st.session_state.prompt_ranking_processing = False
 
 # Check for environment variable API keys (for deployment environments like Posit Connect)
 env_hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN') or os.getenv('hf_login')
@@ -409,12 +405,9 @@ def extract_structural_passages_with_full_text(html_content, chunk_size=500):
         "[data-title]"
     ]
 
-    content_element_ids = {id(el) for el in content_elements}
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
-                if id(element) in content_element_ids:
-                    continue
                 # Skip if this element contains semantic child elements (they're already extracted)
                 has_semantic_children = element.find(semantic_tags)
                 if has_semantic_children:
@@ -422,27 +415,34 @@ def extract_structural_passages_with_full_text(html_content, chunk_size=500):
 
                 # Get text from these content elements (leaf nodes or containers without semantic children)
                 text = element.get_text(separator=' ', strip=True)
-                if text and len(text.split()) > 2:
+                if text and len(text.split()) > 2 and element not in content_elements:
                     content_elements.append(element)
-                    content_element_ids.add(id(element))
         except Exception:
             pass
 
-    # Deduplicate: remove elements that have an ancestor already in the list
-    # Walk up the parent chain (O(n * depth)) instead of checking all descendants (O(n²))
-    element_id_set = {id(el) for el in content_elements}
+    # Deduplicate: remove elements that are ancestors/descendants of each other
+    # Keep the more specific (child) element when there's nesting
     filtered_elements = []
     for el in content_elements:
-        has_ancestor_in_list = False
-        parent = el.parent
-        while parent:
-            if id(parent) in element_id_set:
-                has_ancestor_in_list = True
+        # Check if any other element in our list is a parent of this one
+        is_ancestor_in_list = False
+        for other_el in content_elements:
+            if other_el != el and el in other_el.descendants:
+                is_ancestor_in_list = True
                 break
-            parent = parent.parent
-        if not has_ancestor_in_list:
+
+        # Only keep if no ancestor is already in the list (prefer children over parents)
+        if not is_ancestor_in_list:
             filtered_elements.append(el)
-    content_elements = filtered_elements
+
+    # Final deduplication by element id
+    seen_elements = set()
+    unique_content_elements = []
+    for el in filtered_elements:
+        if id(el) not in seen_elements:
+            seen_elements.add(id(el))
+            unique_content_elements.append(el)
+    content_elements = unique_content_elements
 
     merged_passages = []
     i = 0
@@ -620,38 +620,39 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         "[data-content]",
         "[data-title]"
     ]
-    all_element_ids = {id(el) for el in all_elements}
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
-                if id(element) in all_element_ids:
-                    continue
                 # Skip if this element contains semantic child elements
                 has_semantic_children = element.find(semantic_tags)
                 if has_semantic_children:
                     continue
 
                 text = element.get_text(separator=' ', strip=True)
-                if text and len(text.split()) > 2:
+                if text and len(text.split()) > 2 and element not in all_elements:
                     all_elements.append(element)
-                    all_element_ids.add(id(element))
         except Exception:
             pass
 
-    # Deduplicate: remove elements that have an ancestor already in the list
-    element_id_set = {id(el) for el in all_elements}
+    # Deduplicate: remove elements that are ancestors/descendants of each other
     filtered_elements = []
     for el in all_elements:
-        has_ancestor_in_list = False
-        parent = el.parent
-        while parent:
-            if id(parent) in element_id_set:
-                has_ancestor_in_list = True
+        is_ancestor_in_list = False
+        for other_el in all_elements:
+            if other_el != el and el in other_el.descendants:
+                is_ancestor_in_list = True
                 break
-            parent = parent.parent
-        if not has_ancestor_in_list:
+        if not is_ancestor_in_list:
             filtered_elements.append(el)
-    all_elements = filtered_elements
+
+    # Final deduplication by element id
+    seen_ids = set()
+    unique_elements = []
+    for el in filtered_elements:
+        if id(el) not in seen_ids:
+            seen_ids.add(id(el))
+            unique_elements.append(el)
+    all_elements = unique_elements
 
     for element in all_elements:
         element_text = clean_text_for_display(element.get_text(separator=' '))
@@ -1049,92 +1050,43 @@ scraping_method = st.sidebar.selectbox(
 )
 
 st.sidebar.divider()
+st.sidebar.header("⚙️ Query Configuration")
+initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering", disabled=st.session_state.processing)
+num_sq_val = st.sidebar.slider("Number of Synthetic Queries:", 3, 20, 7, disabled=st.session_state.processing)
 
-# Input Mode selection - must come first since other sections depend on it
 st.sidebar.subheader("📊 Input Mode")
-input_mode = st.sidebar.radio("Choose Input Mode:", ("Analyze URLs", "Analyze Pasted Text", "Rank Prompts by Persona"), disabled=st.session_state.processing or st.session_state.prompt_ranking_processing)
-
-# Only show Query Configuration for URL and Pasted Text modes
-if input_mode != "Rank Prompts by Persona":
-    st.sidebar.header("⚙️ Query Configuration")
-    initial_query_val = st.sidebar.text_input("Initial Search Query:", "benefits of server-side rendering", disabled=st.session_state.processing)
-    num_sq_val = st.sidebar.slider("Number of Synthetic Queries:", 3, 20, 7, disabled=st.session_state.processing)
-else:
-    initial_query_val = ""
-    num_sq_val = 7
+input_mode = st.sidebar.radio("Choose Input Mode:", ("Analyze URLs", "Analyze Pasted Text"), disabled=st.session_state.processing)
 
 if input_mode == "Analyze URLs":
     urls_text_area_val = st.sidebar.text_area(
-        "Enter URLs (one per line):",
-        "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr",
-        height=100,
+        "Enter URLs (one per line):", 
+        "https://cloudinary.com/guides/automatic-image-cropping/server-side-rendering-benefits-use-cases-and-best-practices\nhttps://prismic.io/blog/what-is-ssr", 
+        height=100, 
         disabled=st.session_state.processing
     )
-elif input_mode == "Analyze Pasted Text":
+else: 
     pasted_content_text = st.sidebar.text_area("Paste content here:", height=200, disabled=st.session_state.processing)
-elif input_mode == "Rank Prompts by Persona":
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**🎯 Persona & Topic Configuration**")
-    persona_description = st.sidebar.text_area(
-        "Persona Description:",
-        placeholder="e.g., A marketing manager at a B2B SaaS company looking to improve lead generation...",
-        height=100,
-        disabled=st.session_state.prompt_ranking_processing,
-        help="Describe the target persona/audience you want to optimize prompts for"
-    )
-    primary_search_topic = st.sidebar.text_input(
-        "Primary Search Topic:",
-        placeholder="e.g., B2B lead generation strategies",
-        disabled=st.session_state.prompt_ranking_processing,
-        help="The main topic or search intent to rank prompts against"
-    )
-    st.sidebar.markdown("**📝 Prompts to Rank**")
-    prompts_to_rank = st.sidebar.text_area(
-        "Enter prompts (one per line):",
-        placeholder="How can I generate more leads?\nWhat are the best B2B marketing tactics?\nHow do I improve conversion rates?",
-        height=200,
-        disabled=st.session_state.prompt_ranking_processing,
-        help="Enter multiple prompts, one per line. They will be ranked by relevance to the persona + topic."
-    )
 
-if input_mode != "Rank Prompts by Persona":
-    if analysis_granularity.startswith("Passage"):
-        st.sidebar.subheader("Passage Context Settings")
-        chunk_size_val = st.sidebar.slider(
-            "Chunk Size (characters):",
-            200, 1000, 500,
-            step=100,
-            help="Groups small passages (like gallery captions, product titles) into chunks of this size. ~500 chars is optimal for embedding models.",
-            disabled=st.session_state.processing
-        )
-        s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 5, 2, help="Adds context from neighboring passages for better similarity calculation.", disabled=st.session_state.processing)
-    else:
-        chunk_size_val = 500
-        s_overlap_val = 0
-
-    analyze_disabled = not (st.session_state.gemini_api_configured or st.session_state.openai_api_configured)
-
-    if st.sidebar.button("🚀 Analyze Content", key="analyze_button", type="primary", disabled=st.session_state.processing or analyze_disabled):
-        st.session_state.processing = True
-        st.session_state.scraping_method = scraping_method
-        st.rerun()
+if analysis_granularity.startswith("Passage"):
+    st.sidebar.subheader("Passage Context Settings")
+    chunk_size_val = st.sidebar.slider(
+        "Chunk Size (characters):",
+        200, 1000, 500,
+        step=100,
+        help="Groups small passages (like gallery captions, product titles) into chunks of this size. ~500 chars is optimal for embedding models.",
+        disabled=st.session_state.processing
+    )
+    s_overlap_val = st.sidebar.slider("Context Sentence Overlap:", 0, 5, 2, help="Adds context from neighboring passages for better similarity calculation.", disabled=st.session_state.processing)
 else:
-    # Prompt Ranking mode - separate analyze button
     chunk_size_val = 500
     s_overlap_val = 0
 
-    # For prompt ranking, we only need embedding model (local models work without API keys)
-    model_choice = st.session_state.selected_embedding_model
-    if model_choice.startswith("openai-"):
-        prompt_ranking_disabled = not st.session_state.openai_api_configured
-    elif model_choice.startswith("gemini-"):
-        prompt_ranking_disabled = not st.session_state.gemini_api_configured
-    else:
-        prompt_ranking_disabled = False  # Local models don't need API keys
+analyze_disabled = not (st.session_state.gemini_api_configured or st.session_state.openai_api_configured)
 
-    if st.sidebar.button("🎯 Rank Prompts", key="rank_prompts_button", type="primary", disabled=st.session_state.prompt_ranking_processing or prompt_ranking_disabled):
-        st.session_state.prompt_ranking_processing = True
-        st.rerun()
+if st.sidebar.button("🚀 Analyze Content", key="analyze_button", type="primary", disabled=st.session_state.processing or analyze_disabled):
+    st.session_state.processing = True
+    st.session_state.scraping_method = scraping_method
+    st.rerun()
 
 # --- Main Processing Block ---
 if st.session_state.processing:
@@ -1312,94 +1264,6 @@ if st.session_state.processing:
 
     finally:
         st.session_state.processing = False
-        st.rerun()
-
-# --- Prompt Ranking Processing Block ---
-if st.session_state.prompt_ranking_processing:
-    try:
-        # Validate inputs
-        if not persona_description or not persona_description.strip():
-            st.warning("Persona Description is required.")
-            st.stop()
-        if not primary_search_topic or not primary_search_topic.strip():
-            st.warning("Primary Search Topic is required.")
-            st.stop()
-        if not prompts_to_rank or not prompts_to_rank.strip():
-            st.warning("Please enter prompts to rank.")
-            st.stop()
-
-        # Parse prompts (one per line)
-        prompts_list = [p.strip() for p in prompts_to_rank.split('\n') if p.strip()]
-        if len(prompts_list) < 2:
-            st.warning("Please enter at least 2 prompts to rank.")
-            st.stop()
-
-        # Load embedding model
-        local_embedding_model_instance = None
-        if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
-            with st.spinner(f"Loading embedding model..."):
-                local_embedding_model_instance = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
-            if not local_embedding_model_instance:
-                st.stop()
-
-        # Reset prompt ranking state
-        st.session_state.prompt_ranking_results = None
-        st.session_state.prompt_ranking_done = False
-
-        # Create combined reference text (persona + topic)
-        reference_text = f"{persona_description.strip()} | Search Intent: {primary_search_topic.strip()}"
-
-        with st.spinner("Computing embeddings..."):
-            # Embed the reference (persona + topic)
-            reference_embedding = get_embeddings([reference_text], local_embedding_model_instance)
-
-            # Also embed persona and topic separately for detailed analysis
-            persona_embedding = get_embeddings([persona_description.strip()], local_embedding_model_instance)
-            topic_embedding = get_embeddings([primary_search_topic.strip()], local_embedding_model_instance)
-
-            # Embed all prompts
-            prompt_embeddings = get_embeddings(prompts_list, local_embedding_model_instance)
-
-        if reference_embedding.size == 0 or prompt_embeddings.size == 0:
-            st.error("Embedding generation failed. Please check your API configuration.")
-            st.stop()
-
-        with st.spinner("Calculating similarity scores..."):
-            # Calculate similarities
-            combined_similarities = cosine_similarity(prompt_embeddings, reference_embedding).flatten()
-            persona_similarities = cosine_similarity(prompt_embeddings, persona_embedding).flatten()
-            topic_similarities = cosine_similarity(prompt_embeddings, topic_embedding).flatten()
-
-            # Build results
-            results = []
-            for i, prompt in enumerate(prompts_list):
-                results.append({
-                    "Prompt": prompt,
-                    "Combined Score": combined_similarities[i],
-                    "Persona Score": persona_similarities[i],
-                    "Topic Score": topic_similarities[i],
-                    "Rank": 0  # Will be filled after sorting
-                })
-
-            # Sort by combined score descending
-            results.sort(key=lambda x: x["Combined Score"], reverse=True)
-
-            # Assign ranks
-            for i, result in enumerate(results):
-                result["Rank"] = i + 1
-
-        # Save results
-        st.session_state.prompt_ranking_results = {
-            "persona": persona_description.strip(),
-            "topic": primary_search_topic.strip(),
-            "results": results,
-            "model": st.session_state.selected_embedding_model
-        }
-        st.session_state.prompt_ranking_done = True
-        st.success(f"Ranking complete! Analyzed {len(prompts_list)} prompts.")
-
-    finally:
-        st.session_state.prompt_ranking_processing = False
         st.rerun()
 
 # --- Results Display Section ---
@@ -1680,146 +1544,8 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 mime="text/markdown"
             )
 
-# --- Prompt Ranking Results Display ---
-if st.session_state.get("prompt_ranking_done") and st.session_state.prompt_ranking_results:
-    st.markdown("---")
-    st.subheader("🎯 Prompt Ranking Results")
-
-    results_data = st.session_state.prompt_ranking_results
-
-    # Display context
-    st.markdown(f"**Persona:** {results_data['persona']}")
-    st.markdown(f"**Search Topic:** {results_data['topic']}")
-    st.markdown(f"**Embedding Model:** `{results_data['model']}`")
-
-    st.markdown("---")
-
-    # Create DataFrame for display
-    df_results = pd.DataFrame(results_data["results"])
-
-    # Reorder columns
-    df_results = df_results[["Rank", "Prompt", "Combined Score", "Persona Score", "Topic Score"]]
-
-    # Display ranked table
-    st.dataframe(
-        df_results,
-        use_container_width=True,
-        column_config={
-            "Rank": st.column_config.NumberColumn("Rank", format="%d"),
-            "Prompt": st.column_config.TextColumn("Prompt", width="large"),
-            "Combined Score": st.column_config.ProgressColumn(
-                "Combined Score",
-                format="%.3f",
-                min_value=0,
-                max_value=1,
-            ),
-            "Persona Score": st.column_config.ProgressColumn(
-                "Persona Score",
-                format="%.3f",
-                min_value=0,
-                max_value=1,
-            ),
-            "Topic Score": st.column_config.ProgressColumn(
-                "Topic Score",
-                format="%.3f",
-                min_value=0,
-                max_value=1,
-            ),
-        },
-        hide_index=True
-    )
-
-    # Visualization
-    st.markdown("---")
-    st.subheader("📊 Score Visualization")
-
-    # Bar chart comparing scores
-    fig_scores = go.Figure()
-
-    prompts_short = [p[:50] + "..." if len(p) > 50 else p for p in df_results["Prompt"]]
-
-    fig_scores.add_trace(go.Bar(
-        name="Combined Score",
-        x=prompts_short,
-        y=df_results["Combined Score"],
-        marker_color="#1f77b4"
-    ))
-    fig_scores.add_trace(go.Bar(
-        name="Persona Score",
-        x=prompts_short,
-        y=df_results["Persona Score"],
-        marker_color="#ff7f0e"
-    ))
-    fig_scores.add_trace(go.Bar(
-        name="Topic Score",
-        x=prompts_short,
-        y=df_results["Topic Score"],
-        marker_color="#2ca02c"
-    ))
-
-    fig_scores.update_layout(
-        barmode="group",
-        title="Prompt Relevance Scores",
-        xaxis_title="Prompts",
-        yaxis_title="Similarity Score",
-        yaxis_range=[0, 1],
-        height=max(400, 50 * len(df_results)),
-        xaxis_tickangle=45
-    )
-
-    st.plotly_chart(fig_scores, use_container_width=True)
-
-    # Top/Bottom analysis
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("### 🔥 Top 3 Most Relevant Prompts")
-        for i, row in enumerate(results_data["results"][:3]):
-            st.markdown(f"**#{i+1}** (Score: {row['Combined Score']:.3f})")
-            st.markdown(f"> {row['Prompt']}")
-            st.caption(f"Persona: {row['Persona Score']:.3f} | Topic: {row['Topic Score']:.3f}")
-            st.divider()
-
-    with col2:
-        st.markdown("### ❄️ Bottom 3 Least Relevant Prompts")
-        bottom_3 = results_data["results"][-3:]
-        for i, row in enumerate(bottom_3):
-            rank = len(results_data["results"]) - 2 + i
-            st.markdown(f"**#{rank}** (Score: {row['Combined Score']:.3f})")
-            st.markdown(f"> {row['Prompt']}")
-            st.caption(f"Persona: {row['Persona Score']:.3f} | Topic: {row['Topic Score']:.3f}")
-            st.divider()
-
-    # Download results
-    csv_data = df_results.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Rankings (CSV)",
-        data=csv_data,
-        file_name=f"prompt_rankings_{results_data['topic'].replace(' ', '_')[:30]}.csv",
-        mime="text/csv"
-    )
-
-# --- Clear Cache Button ---
-if st.session_state.get("analysis_done") or st.session_state.get("prompt_ranking_done"):
-    st.markdown("---")
-    st.subheader("🗑️ Clear Analysis Cache")
-    st.markdown("Clear cached results to analyze new content. This preserves your API keys and settings.")
-
-    if st.button("🗑️ Clear Cache & Reset", type="secondary", help="Clears all cached analysis results so you can analyze new content"):
-        # Reset analysis-related session state
-        st.session_state.all_url_metrics_list = None
-        st.session_state.url_processed_units_dict = None
-        st.session_state.all_queries_for_analysis = None
-        st.session_state.analysis_done = False
-        st.session_state.seo_recommendations = {}
-        # Reset prompt ranking state
-        st.session_state.prompt_ranking_results = None
-        st.session_state.prompt_ranking_done = False
-        st.success("Cache cleared! You can now analyze new content.")
-        st.rerun()
-
 # Footer
 st.sidebar.divider()
-st.sidebar.info("🚀 AI Mode Query Fan-Out Analyzer v3.3")
+st.sidebar.info("🚀 AI Mode Query Fan-Out Analyzer v3.1")
+
 
