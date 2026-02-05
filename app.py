@@ -1257,7 +1257,8 @@ if st.session_state.processing:
 
         # Embed all queries
         t0 = time.time()
-        local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
+        with st.spinner(f"Embedding {len(local_all_queries)} queries..."):
+            local_all_query_embs = get_embeddings(local_all_queries, local_embedding_model_instance)
         t_q_emb = time.time() - t0
         st.write(f"_Query embeddings ({t_q_emb:.1f}s)_")
 
@@ -1325,9 +1326,17 @@ if st.session_state.processing:
 
             st.write(f"_Extracted {len(units_for_embedding)} content units ({t_extract:.1f}s)_")
 
+            # Truncate long passages to ~500 words (embedding models cap at 512 tokens anyway)
+            max_words = 500
+            units_for_embedding = [
+                " ".join(u.split()[:max_words]) if len(u.split()) > max_words else u
+                for u in units_for_embedding
+            ]
+
             # Generate embeddings for content units
             t0 = time.time()
-            unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
+            with st.spinner(f"Embedding {len(units_for_embedding)} content units..."):
+                unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
             t_emb = time.time() - t0
             cached_label = " [cached]" if t_emb < 0.1 else ""
             st.write(f"_Content embeddings ({t_emb:.1f}s){cached_label}_")
