@@ -264,7 +264,10 @@ def get_embeddings(texts, local_model_instance=None):
         if local_model_instance is None:
             st.error("Local embedding model not loaded.")
             return np.array([])
-        result = local_model_instance.encode(texts_list, batch_size=32, show_progress_bar=True)
+        # Use smaller batches for large models to avoid memory thrashing
+        is_large_model = "mxbai" in model_choice or "large" in model_choice or "300m" in model_choice.lower()
+        batch = 8 if is_large_model else 32
+        result = local_model_instance.encode(texts_list, batch_size=batch, show_progress_bar=True)
 
     # Store in cache
     if result is not None and result.size > 0:
@@ -1102,7 +1105,7 @@ embedding_model_options = {
     "Local: MPNet (Quality Focus)": "all-mpnet-base-v2", 
     "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", 
     "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", 
-    "Local: MixedBread (Large & Powerful)": "mixedbread-ai/mxbai-embed-large-v1",
+    "Local: MixedBread (Large - Slow on CPU)": "mixedbread-ai/mxbai-embed-large-v1",
     "Google: Gemma Embedding (300M)": "google/embeddinggemma-300m",
     "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", 
     "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", 
