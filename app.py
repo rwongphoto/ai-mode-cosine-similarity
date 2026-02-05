@@ -588,8 +588,51 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
     html_parts = []
     semantic_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'table', 'article', 'section', 'figcaption']
 
-    # Collect elements from semantic tags
-    all_elements = list(soup.find_all(semantic_tags))
+    # --- FAQ / Accordion detection: render Q+A pairs as single highlighted blocks ---
+    faq_handled_ids = set()
+    faq_item_selectors = [
+        ".panel.panel-default",
+        "[class*='faq-item']", "[class*='faq_item']", "[class*='faqitem']",
+        "[class*='accordion-item']", "[class*='accordion_item']",
+        "details",
+        "[itemtype*='Question']",
+    ]
+    for sel in faq_item_selectors:
+        try:
+            for element in soup.select(sel):
+                if id(element) in faq_handled_ids:
+                    continue
+                text = clean_text_for_display(element.get_text(separator=' '))
+                if text and len(text.split()) > 5:
+                    # Score the combined Q+A text
+                    best_score = 0.5
+                    if text in unit_scores_map:
+                        best_score = unit_scores_map[text]
+                    else:
+                        for unit_text, score in unit_scores_map.items():
+                            if text in unit_text or unit_text in text:
+                                best_score = max(best_score, score)
+                        if best_score == 0.5:
+                            text_words = set(text.lower().split())
+                            if len(text_words) > 3:
+                                for unit_text, score in unit_scores_map.items():
+                                    unit_words = set(unit_text.lower().split())
+                                    if len(unit_words) > 3:
+                                        overlap = len(text_words.intersection(unit_words))
+                                        overlap_ratio = overlap / min(len(text_words), len(unit_words))
+                                        if overlap_ratio > 0.6:
+                                            best_score = max(best_score, score * overlap_ratio)
+                    color = "green" if best_score >= 0.75 else "red" if best_score < 0.60 else "inherit"
+                    style = f"color:{color}; border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 1em; margin-top: 1em;"
+                    html_parts.append(f"<div style='{style}'>{text}</div>")
+                    faq_handled_ids.add(id(element))
+                    for desc in element.find_all(True):
+                        faq_handled_ids.add(id(desc))
+        except Exception:
+            pass
+
+    # Collect elements from semantic tags (skip FAQ-handled elements)
+    all_elements = [el for el in soup.find_all(semantic_tags) if id(el) not in faq_handled_ids]
 
     # Also collect content-related elements (e-commerce, collection pages, galleries, etc.)
     # BUT only if they don't contain semantic child elements (to avoid duplication)
@@ -634,6 +677,9 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
+                # Skip elements already handled as FAQ/accordion items
+                if id(element) in faq_handled_ids:
+                    continue
                 # Skip if this element contains semantic child elements
                 has_semantic_children = element.find(semantic_tags)
                 if has_semantic_children:
