@@ -283,10 +283,9 @@ def fetch_content_with_zyte(url, api_key):
             json={
                 'url': url,
                 'browserHtml': True,  # Enables JavaScript rendering
-                'javascript': True,   # Ensure JS is executed
                 'actions': [
                     # Wait for page to fully load
-                    {'action': 'waitForTimeout', 'timeout': 3000}
+                    {'action': 'waitForTimeout', 'timeoutMs': 3000}
                 ]
             },
             timeout=60  # Longer timeout for JS rendering
