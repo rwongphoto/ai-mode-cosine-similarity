@@ -38,6 +38,7 @@ if "openai_api_configured" not in st.session_state: st.session_state.openai_api_
 if "openai_client" not in st.session_state: st.session_state.openai_client = None
 if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'all-mpnet-base-v2'
 if "processing" not in st.session_state: st.session_state.processing = False
+if "analysis_error" not in st.session_state: st.session_state.analysis_error = None
 if "zyte_api_key_to_persist" not in st.session_state: st.session_state.zyte_api_key_to_persist = ""
 if "zyte_api_configured" not in st.session_state: st.session_state.zyte_api_configured = False
 if "huggingface_api_key_to_persist" not in st.session_state: st.session_state.huggingface_api_key_to_persist = ""
@@ -359,6 +360,25 @@ def split_text_into_sentences(text):
     sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s', text)
     return [s.strip() for s in sentences if s.strip() and len(s.split()) >= 3]
 
+def _chunk_gallery_items(passages, target_size=400):
+    """Groups short gallery/listing passages into ~target_size char chunks."""
+    if not passages:
+        return []
+    chunked = []
+    current_chunk = []
+    current_size = 0
+    for passage in passages:
+        passage_len = len(passage)
+        if current_size + passage_len + 3 > target_size and current_chunk:
+            chunked.append(" | ".join(current_chunk))
+            current_chunk = []
+            current_size = 0
+        current_chunk.append(passage)
+        current_size += passage_len + 3  # +3 for " | " separator
+    if current_chunk:
+        chunked.append(" | ".join(current_chunk))
+    return chunked
+
 def extract_structural_passages_with_full_text(html_content):
     if not html_content:
         return [], ""
@@ -432,6 +452,9 @@ def extract_structural_passages_with_full_text(html_content):
         "[data-title]"
     ]
 
+    # Track which elements are gallery/listing items (from content selectors, not semantic tags)
+    gallery_element_ids = set()
+
     for sel in content_selectors:
         try:
             for element in soup.select(sel):
@@ -444,6 +467,7 @@ def extract_structural_passages_with_full_text(html_content):
                 text = element.get_text(separator=' ', strip=True)
                 if text and len(text.split()) > 2 and element not in content_elements:
                     content_elements.append(element)
+                    gallery_element_ids.add(id(element))
         except Exception:
             pass
 
@@ -471,29 +495,46 @@ def extract_structural_passages_with_full_text(html_content):
             unique_content_elements.append(el)
     content_elements = unique_content_elements
 
-    merged_passages = []
+    structural_passages = []
+    gallery_passages = []
     i = 0
 
     while i < len(content_elements):
         current_element = content_elements[i]
         current_text = current_element.get_text(separator=' ', strip=True)
+        is_gallery = id(current_element) in gallery_element_ids
 
         # Merge headers with following content
         if current_element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and (i + 1) < len(content_elements):
-            next_text = content_elements[i+1].get_text(separator=' ', strip=True)
+            next_element = content_elements[i+1]
+            next_text = next_element.get_text(separator=' ', strip=True)
             combined_text = f"{current_text}. {next_text}"
+            next_is_gallery = id(next_element) in gallery_element_ids
             if combined_text.strip():
-                merged_passages.append(combined_text)
+                if is_gallery or next_is_gallery:
+                    gallery_passages.append(combined_text)
+                else:
+                    structural_passages.append(combined_text)
             i += 2
         else:
             if current_text.strip():
-                merged_passages.append(current_text)
+                if is_gallery:
+                    gallery_passages.append(current_text)
+                else:
+                    structural_passages.append(current_text)
             i += 1
-    
-    # Include image alt texts as additional passages (valuable for gallery pages)
-    merged_passages.extend(image_alt_texts)
 
-    final_passages = [clean_text_for_display(p) for p in merged_passages if p and len(p.split()) > 2]
+    # Image alt texts are gallery items
+    gallery_passages.extend(image_alt_texts)
+
+    # Clean passages
+    clean_structural = [clean_text_for_display(p) for p in structural_passages if p and len(p.split()) > 2]
+    clean_gallery = [clean_text_for_display(p) for p in gallery_passages if p and len(p.split()) > 2]
+
+    # Chunk gallery/listing items into ~400 char groups
+    chunked_gallery = _chunk_gallery_items(clean_gallery, target_size=400)
+
+    final_passages = clean_structural + chunked_gallery
     full_text = clean_text_for_display(soup.get_text(separator=' '))
     return final_passages, full_text
 
@@ -1271,10 +1312,18 @@ if st.session_state.processing:
             st.session_state.analysis_done = True
             st.session_state.last_analysis_granularity = analysis_granularity
             st.success(f"Analysis complete! Processed {len(local_processed_units_data)} sources with {len(local_all_queries)} queries.")
+            st.session_state.analysis_error = None
 
+    except Exception as e:
+        st.session_state.analysis_error = f"{type(e).__name__}: {str(e)}"
     finally:
         st.session_state.processing = False
         st.rerun()
+
+# Display any analysis errors that were caught
+if st.session_state.get("analysis_error"):
+    st.error(f"Analysis failed: {st.session_state.analysis_error}")
+    st.session_state.analysis_error = None
 
 # --- Prompt Ranking Processing Block ---
 if st.session_state.prompt_ranking_processing:
