@@ -20,6 +20,7 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from bs4 import BeautifulSoup
 import textwrap
+import hashlib
 from selenium_stealth import stealth
 from huggingface_hub import login as hf_login
 
@@ -47,6 +48,7 @@ if "huggingface_api_configured" not in st.session_state: st.session_state.huggin
 if "prompt_ranking_results" not in st.session_state: st.session_state.prompt_ranking_results = None
 if "prompt_ranking_done" not in st.session_state: st.session_state.prompt_ranking_done = False
 if "prompt_ranking_processing" not in st.session_state: st.session_state.prompt_ranking_processing = False
+if "embedding_cache" not in st.session_state: st.session_state.embedding_cache = {}
 
 # Check for environment variable API keys (for deployment environments like Posit Connect)
 env_hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN') or os.getenv('hf_login')
@@ -240,17 +242,34 @@ def get_gemini_embeddings(texts: list, model: str):
         st.error(f"Gemini embedding failed: {e}")
         return np.array([])
 
+def _embedding_cache_key(texts, model_name):
+    """Generate a cache key from model name + text content."""
+    content = model_name + "||" + "||".join(texts)
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
 def get_embeddings(texts, local_model_instance=None):
     model_choice = st.session_state.selected_embedding_model
-    if model_choice.startswith("openai-"): 
-        return get_openai_embeddings(texts, client=st.session_state.openai_client, model=model_choice.replace("openai-", ""))
-    elif model_choice.startswith("gemini-"): 
-        return get_gemini_embeddings(texts, model="models/" + model_choice.replace("gemini-", ""))
+    texts_list = list(texts) if isinstance(texts, tuple) else list(texts)
+
+    # Check embedding cache
+    cache_key = _embedding_cache_key(texts_list, model_choice)
+    if cache_key in st.session_state.embedding_cache:
+        return st.session_state.embedding_cache[cache_key]
+
+    if model_choice.startswith("openai-"):
+        result = get_openai_embeddings(texts_list, client=st.session_state.openai_client, model=model_choice.replace("openai-", ""))
+    elif model_choice.startswith("gemini-"):
+        result = get_gemini_embeddings(texts_list, model="models/" + model_choice.replace("gemini-", ""))
     else:
-        if local_model_instance is None: 
+        if local_model_instance is None:
             st.error("Local embedding model not loaded.")
             return np.array([])
-        return local_model_instance.encode(list(texts) if isinstance(texts, tuple) else texts)
+        result = local_model_instance.encode(texts_list, batch_size=32, show_progress_bar=True)
+
+    # Store in cache
+    if result is not None and result.size > 0:
+        st.session_state.embedding_cache[cache_key] = result
+    return result
 
 # --- Content Processing Functions ---
 def initialize_selenium_driver():
@@ -962,7 +981,7 @@ Provide specific, actionable SEO recommendations to improve this page's visibili
     prompt += "\nFormat your response with clear headers and bullet points. Be specific and reference the actual queries, competitor content, and gaps where relevant."
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-pro")
+        model = genai.GenerativeModel("gemini-3-flash-preview")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -975,7 +994,7 @@ def generate_synthetic_queries(user_query, num_queries=7):
         st.error("Gemini API not configured for query generation.")
         return []
 
-    model = genai.GenerativeModel("gemini-2.5-pro")
+    model = genai.GenerativeModel("gemini-3-flash-preview")
     prompt = f"""
 Here are the 9 query variant types - SELECT ONLY THE TYPES THAT MAKE SENSE for this specific query:
 
@@ -1871,6 +1890,8 @@ if st.session_state.get("analysis_done") or st.session_state.get("prompt_ranking
         # Reset prompt ranking state
         st.session_state.prompt_ranking_results = None
         st.session_state.prompt_ranking_done = False
+        # Clear embedding cache
+        st.session_state.embedding_cache = {}
         st.success("Cache cleared! You can now analyze new content.")
         st.rerun()
 
