@@ -7,7 +7,7 @@ scikit-learn
 numpy
 pandas
 plotly
-google-genai
+google-genai==1.65.0
 nltk
 selenium  # <-- Add this
 # You might also need to specify webdriver-manager if you use it locally
