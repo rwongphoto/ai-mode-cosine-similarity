@@ -1,12 +1,13 @@
 streamlit
 requests
 beautifulsoup4
+lxml
 sentence-transformers
 scikit-learn
 numpy
 pandas
 plotly
-google-generativeai
+google-genai
 nltk
 selenium  # <-- Add this
 # You might also need to specify webdriver-manager if you use it locally

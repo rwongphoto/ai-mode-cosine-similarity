@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import openai
 from openai import OpenAI
 import re
@@ -37,6 +38,7 @@ if "gemini_api_configured" not in st.session_state: st.session_state.gemini_api_
 if "openai_api_key_to_persist" not in st.session_state: st.session_state.openai_api_key_to_persist = ""
 if "openai_api_configured" not in st.session_state: st.session_state.openai_api_configured = False
 if "openai_client" not in st.session_state: st.session_state.openai_client = None
+if "gemini_client" not in st.session_state: st.session_state.gemini_client = None
 if "selected_embedding_model" not in st.session_state: st.session_state.selected_embedding_model = 'all-mpnet-base-v2'
 if "processing" not in st.session_state: st.session_state.processing = False
 if "analysis_error" not in st.session_state: st.session_state.analysis_error = None
@@ -112,11 +114,11 @@ with st.sidebar.expander("Gemini API", expanded=not st.session_state.get("gemini
     if st.button("Set & Verify Gemini Key", disabled=st.session_state.processing):
         if gemini_api_key_input:
             try:
-                genai.configure(api_key=gemini_api_key_input)
-                if not any('generateContent' in m.supported_generation_methods for m in genai.list_models()): 
-                    raise Exception("No usable models found for this API key.")
+                test_client = genai.Client(api_key=gemini_api_key_input)
+                test_client.models.embed_content(model="gemini-embedding-001", contents="test")
                 st.session_state.gemini_api_key_to_persist = gemini_api_key_input
                 st.session_state.gemini_api_configured = True
+                st.session_state.gemini_client = test_client
                 st.success("Gemini API Key Configured!")
                 st.rerun()
             except Exception as e:
@@ -192,10 +194,10 @@ st.sidebar.markdown(f"✅ Zyte API: **{'Configured' if st.session_state.zyte_api
 if st.session_state.get("openai_api_key_to_persist") and not st.session_state.get("openai_client"):
     st.session_state.openai_client = OpenAI(api_key=st.session_state.openai_api_key_to_persist)
 
-if st.session_state.get("gemini_api_key_to_persist"):
-    try: 
-        genai.configure(api_key=st.session_state.gemini_api_key_to_persist)
-    except Exception: 
+if st.session_state.get("gemini_api_key_to_persist") and not st.session_state.get("gemini_client"):
+    try:
+        st.session_state.gemini_client = genai.Client(api_key=st.session_state.gemini_api_key_to_persist)
+    except Exception:
         st.session_state.gemini_api_configured = False
 
 # Initialize Hugging Face authentication if key is available
@@ -233,12 +235,16 @@ def get_openai_embeddings(texts: list, client: OpenAI, model: str):
         return np.array([])
 
 def get_gemini_embeddings(texts: list, model: str):
-    if not texts: 
+    if not texts or not st.session_state.get("gemini_client"):
         return np.array([])
     try:
-        result = genai.embed_content(model=model, content=texts, task_type="RETRIEVAL_DOCUMENT")
-        return np.array(result['embedding'])
-    except Exception as e: 
+        client = st.session_state.gemini_client
+        result = client.models.embed_content(
+            model=model, contents=texts,
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
+        )
+        return np.array([e.values for e in result.embeddings])
+    except Exception as e:
         st.error(f"Gemini embedding failed: {e}")
         return np.array([])
 
@@ -259,7 +265,7 @@ def get_embeddings(texts, local_model_instance=None):
     if model_choice.startswith("openai-"):
         result = get_openai_embeddings(texts_list, client=st.session_state.openai_client, model=model_choice.replace("openai-", ""))
     elif model_choice.startswith("gemini-"):
-        result = get_gemini_embeddings(texts_list, model="models/" + model_choice.replace("gemini-", ""))
+        result = get_gemini_embeddings(texts_list, model="models/" + model_choice)
     else:
         if local_model_instance is None:
             st.error("Local embedding model not loaded.")
@@ -287,7 +293,7 @@ def initialize_selenium_driver():
         return None
 
 def fetch_content_with_zyte(url, api_key):
-    """Fetches HTML content using Zyte API (static HTML, fast)."""
+    """Fetches HTML content using Zyte API with browser rendering."""
     if not api_key:
         st.error("Zyte API key not configured.")
         return None
@@ -299,14 +305,14 @@ def fetch_content_with_zyte(url, api_key):
         response = requests.post(
             "https://api.zyte.com/v1/extract",
             auth=(api_key, ''),
-            json={'url': url, 'httpResponseBody': True},
-            timeout=45
+            json={'url': url, 'browserHtml': True},
+            timeout=90
         )
         response.raise_for_status()
         data = response.json()
 
-        if data.get('httpResponseBody'):
-            html = base64.b64decode(data['httpResponseBody']).decode('utf-8', 'ignore')
+        if data.get('browserHtml'):
+            html = data['browserHtml']
             st.write(f"_✓ Got HTML ({len(html)} chars)_")
             return html
         else:
@@ -981,8 +987,8 @@ Provide specific, actionable SEO recommendations to improve this page's visibili
     prompt += "\nFormat your response with clear headers and bullet points. Be specific and reference the actual queries, competitor content, and gaps where relevant."
 
     try:
-        model = genai.GenerativeModel("gemini-3-flash-preview")
-        response = model.generate_content(prompt)
+        client = st.session_state.gemini_client
+        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
         return response.text
     except Exception as e:
         st.error(f"Gemini recommendation generation failed: {e}")
@@ -994,7 +1000,7 @@ def generate_synthetic_queries(user_query, num_queries=7):
         st.error("Gemini API not configured for query generation.")
         return []
 
-    model = genai.GenerativeModel("gemini-3-flash-preview")
+    client = st.session_state.gemini_client
     prompt = f"""
 Here are the 9 query variant types - SELECT ONLY THE TYPES THAT MAKE SENSE for this specific query:
 
@@ -1059,7 +1065,7 @@ CRITICAL INSTRUCTIONS:
 """
     
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
         content_text = response.text.strip()
         
         # Clean up response format
@@ -1103,10 +1109,10 @@ embedding_model_options = {
     "Local: MiniLM (Speed Focus)": "all-MiniLM-L6-v2", 
     "Local: DistilRoBERTa (Balanced)": "all-distilroberta-v1", 
     "Local: MixedBread (Large - Slow on CPU)": "mixedbread-ai/mxbai-embed-large-v1",
-    "Google: Gemma Embedding (300M)": "google/embeddinggemma-300m",
-    "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small", 
+    "OpenAI: text-embedding-3-small": "openai-text-embedding-3-small",
     "OpenAI: text-embedding-3-large": "openai-text-embedding-3-large", 
-    "Gemini: embedding-001": "gemini-embedding-001"
+    "Gemini: embedding-001": "gemini-embedding-001",
+    "Gemini: Embedding 2 Preview (Multimodal)": "gemini-embedding-2-preview"
 }
 selected_embedding_label = st.sidebar.selectbox("Select Embedding Model:", options=list(embedding_model_options.keys()), index=0, disabled=st.session_state.processing)
 st.session_state.selected_embedding_model = embedding_model_options[selected_embedding_label]
