@@ -53,14 +53,17 @@ if "prompt_ranking_processing" not in st.session_state: st.session_state.prompt_
 if "embedding_cache" not in st.session_state: st.session_state.embedding_cache = {}
 
 # Check for environment variable API keys (for deployment environments like Posit Connect)
+# NOTE: Do NOT call hf_login() here. It makes a synchronous network round-trip to
+# huggingface.co to validate the token, with no timeout. If that call stalls (e.g.
+# slow/unreachable egress from the deployment worker), it blocks the very first
+# Streamlit render and the app never appears. The token is only needed when a gated
+# local model is loaded, and load_local_sentence_transformer_model() authenticates
+# lazily at that point. So here we just register the token without any network call.
 env_hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACE_TOKEN') or os.getenv('hf_login')
 if env_hf_token and not st.session_state.huggingface_api_configured:
-    try:
-        hf_login(token=env_hf_token, add_to_git_credential=False)
-        st.session_state.huggingface_api_key_to_persist = env_hf_token
-        st.session_state.huggingface_api_configured = True
-    except Exception:
-        pass
+    os.environ["HF_TOKEN"] = env_hf_token  # picked up automatically for downloads
+    st.session_state.huggingface_api_key_to_persist = env_hf_token
+    st.session_state.huggingface_api_configured = True
 
 REQUEST_INTERVAL = 3.0
 last_request_time = 0
