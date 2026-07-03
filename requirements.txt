@@ -1,19 +1,24 @@
-streamlit
-requests
-beautifulsoup4
-lxml
-sentence-transformers
-scikit-learn
-numpy
-pandas
-plotly
+# Versions pinned to the Posit Connect Cloud deploy of 2026-07-03 (Python 3.12),
+# which is a known-good, self-consistent set. Do NOT downgrade to older local
+# versions (e.g. numpy 1.x / torch 2.2) -- Connect's base image is built around
+# numpy 2 / torch 2.10, and forcing a numpy 1<->2 downgrade risks ABI breakage.
+streamlit==1.58.0
+requests==2.34.2
+beautifulsoup4==4.15.0
+lxml==6.1.1
+sentence-transformers==5.6.0
+scikit-learn==1.9.0
+numpy==2.5.0
+pandas==3.0.3
+plotly==6.8.0
 google-genai==1.65.0
-nltk
-selenium  # <-- Add this
-# You might also need to specify webdriver-manager if you use it locally
-# webdriver-manager
-trafilatura
-openai
-selenium-stealth
-google-cloud-language
-huggingface_hub
+nltk==3.9.4
+selenium==4.45.0
+trafilatura==2.1.0
+openai==2.44.0
+selenium-stealth==1.0.6
+google-cloud-language==2.21.0
+huggingface_hub==1.22.0
+# transformers is pulled in by sentence-transformers; pin it explicitly since its
+# version drove the startup/auth behavior we debugged.
+transformers==5.13.0
