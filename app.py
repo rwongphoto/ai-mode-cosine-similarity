@@ -207,12 +207,14 @@ if st.session_state.get("gemini_api_key_to_persist") and not st.session_state.ge
     except Exception:
         st.session_state.gemini_api_configured = False
 
-# Initialize Hugging Face authentication if key is available
+# Make the Hugging Face token available for downloads WITHOUT a network call.
+# Do NOT call hf_login() here: it does a synchronous whoami round-trip to
+# huggingface.co on Streamlit's script thread, so if HF egress is slow the app
+# hangs on a load screen forever (the web server still answers health checks on a
+# separate thread, which masks it). Gated models authenticate lazily at load time
+# via load_local_sentence_transformer_model(); the sidebar button validates on click.
 if st.session_state.get("huggingface_api_key_to_persist") and st.session_state.get("huggingface_api_configured"):
-    try:
-        hf_login(token=st.session_state.huggingface_api_key_to_persist, add_to_git_credential=False)
-    except Exception:
-        st.session_state.huggingface_api_configured = False
+    os.environ["HF_TOKEN"] = st.session_state.huggingface_api_key_to_persist
 
 # --- Embedding Functions ---
 @st.cache_resource
