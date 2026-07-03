@@ -1,6 +1,10 @@
 import streamlit as st
 import requests
-from sentence_transformers import SentenceTransformer
+# NOTE: sentence_transformers is imported lazily inside
+# load_local_sentence_transformer_model() (see below). Importing it here pulls in
+# torch + transformers + the full CUDA stack (~15-40s cold on the deploy worker),
+# which would block the first page render for everyone -- even users on OpenAI/Gemini
+# embeddings who never touch a local model.
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import pandas as pd
@@ -214,6 +218,10 @@ if st.session_state.get("huggingface_api_key_to_persist") and st.session_state.g
 @st.cache_resource
 def load_local_sentence_transformer_model(model_name):
     try:
+        # Lazy import: keeps torch/transformers/CUDA out of module load so the page
+        # renders instantly; the cost is paid here, under the caller's spinner, only
+        # when a local model is actually used (cached by @st.cache_resource).
+        from sentence_transformers import SentenceTransformer
         # Use authentication token if available and model requires it
         if st.session_state.get("huggingface_api_configured") and st.session_state.get("huggingface_api_key_to_persist"):
             # Re-authenticate in case it was reset
