@@ -1541,12 +1541,50 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
     # Create summary dataframe
     df_summary = pd.DataFrame(st.session_state.all_url_metrics_list)
     df_display = df_summary.rename(columns={
-        "URL": "Source", 
-        "Max Unit Sim.": f"Max {unit_label} Sim.", 
-        "Avg. Unit Sim.": f"Avg. {unit_label} Sim.", 
+        "URL": "Source",
+        "Max Unit Sim.": f"Max {unit_label} Sim.",
+        "Avg. Unit Sim.": f"Avg. {unit_label} Sim.",
         "Num Units": f"Num {unit_label}s"
     })
-    
+
+    # Rank each source against the competition, per query, for every metric (1 = best)
+    metric_cols = [
+        "Overall Similarity (Weighted)",
+        f"Max {unit_label} Sim.",
+        f"Avg. {unit_label} Sim.",
+    ]
+    rank_col_for_metric = {
+        "Overall Similarity (Weighted)": "Overall Rank",
+        f"Max {unit_label} Sim.": f"Max {unit_label} Rank",
+        f"Avg. {unit_label} Sim.": f"Avg. {unit_label} Rank",
+    }
+    num_sources = df_display["Source"].nunique()
+    for metric_col in metric_cols:
+        df_display[rank_col_for_metric[metric_col]] = (
+            df_display.groupby("Query")[metric_col]
+            .rank(method="min", ascending=False)
+            .astype(int)
+        )
+
+    # Keep each rank column immediately after the metric it ranks
+    ordered_cols = []
+    for col in df_display.columns:
+        if col in rank_col_for_metric.values():
+            continue
+        ordered_cols.append(col)
+        if col in rank_col_for_metric:
+            ordered_cols.append(rank_col_for_metric[col])
+    df_display = df_display[ordered_cols]
+
+    # Order rows by the query generation order, then by overall rank, so ranks read top-down
+    query_order = {q: i for i, q in enumerate(st.session_state.all_queries_for_analysis)}
+    df_display = df_display.sort_values(
+        by=["Query", "Overall Rank"],
+        key=lambda s: s.map(query_order) if s.name == "Query" else s
+    ).reset_index(drop=True)
+
+    st.caption(f"Ranks are per query across {num_sources} source{'s' if num_sources != 1 else ''} (1 = best). Ties share the better rank.")
+
     # Display summary table
     st.dataframe(
         df_display, 
@@ -1569,6 +1607,21 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                 format="%.3f",
                 min_value=0,
                 max_value=1,
+            ),
+            "Overall Rank": st.column_config.NumberColumn(
+                "Overall Rank",
+                help=f"Rank for Overall Similarity within this query (1 of {num_sources} = best)",
+                format="%d",
+            ),
+            f"Max {unit_label} Rank": st.column_config.NumberColumn(
+                f"Max {unit_label} Rank",
+                help=f"Rank for Max {unit_label} Sim. within this query (1 of {num_sources} = best)",
+                format="%d",
+            ),
+            f"Avg. {unit_label} Rank": st.column_config.NumberColumn(
+                f"Avg. {unit_label} Rank",
+                help=f"Rank for Avg. {unit_label} Sim. within this query (1 of {num_sources} = best)",
+                format="%d",
             ),
         }
     )
