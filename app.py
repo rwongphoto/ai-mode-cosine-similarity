@@ -55,6 +55,12 @@ if "prompt_ranking_results" not in st.session_state: st.session_state.prompt_ran
 if "prompt_ranking_done" not in st.session_state: st.session_state.prompt_ranking_done = False
 if "prompt_ranking_processing" not in st.session_state: st.session_state.prompt_ranking_processing = False
 if "embedding_cache" not in st.session_state: st.session_state.embedding_cache = {}
+# Revise & Re-score feature state
+if "all_query_embeddings" not in st.session_state: st.session_state.all_query_embeddings = None
+if "passage_edits" not in st.session_state: st.session_state.passage_edits = {}
+if "passage_additions" not in st.session_state: st.session_state.passage_additions = {}
+if "revision_results" not in st.session_state: st.session_state.revision_results = {}
+if "next_addition_id" not in st.session_state: st.session_state.next_addition_id = 0
 
 # Check for environment variable API keys (for deployment environments like Posit Connect)
 # NOTE: Do NOT call hf_login() here. It makes a synchronous network round-trip to
@@ -276,6 +282,106 @@ def get_gemini_embeddings(texts: list, model: str):
         _record_embedding_error(f"Gemini embedding failed: {e}")
         return np.array([])
     return np.array(vectors)
+
+MAX_UNIT_WORDS = 500
+
+def build_embedding_units(display_units, granularity, overlap_count):
+    """Turn display units into the text that actually gets embedded.
+
+    Passage mode borrows sentences from neighbouring passages for context, so a
+    single edited passage also changes the embedding text of its neighbours.
+    Re-scoring reuses this so a revision is prepared exactly like the original.
+    """
+    if granularity.startswith("Sentence"):
+        embedding_units = list(display_units)
+    else:
+        embedding_units = add_sentence_overlap_to_passages(display_units, overlap_count)
+    # Embedding models cap out around 512 tokens anyway
+    return [
+        " ".join(u.split()[:MAX_UNIT_WORDS]) if len(u.split()) > MAX_UNIT_WORDS else u
+        for u in embedding_units
+    ]
+
+def assemble_revised_units(base_units, edits, additions):
+    """Apply edits and insertions to the baseline units.
+
+    Returns (revised_units, origins) where origins[i] is the baseline index the
+    unit came from, or None for a newly added unit. Insertions are keyed by the
+    baseline index they follow; -1 places a unit at the top of the document.
+    """
+    pending = {}
+    for addition in additions:
+        if addition["text"].strip():
+            pending.setdefault(addition["after_idx"], []).append(addition)
+
+    revised_units, origins = [], []
+    for addition in pending.get(-1, []):
+        revised_units.append(addition["text"])
+        origins.append(None)
+    for i, unit in enumerate(base_units):
+        revised_units.append(edits.get(i, unit))
+        origins.append(i)
+        for addition in pending.get(i, []):
+            revised_units.append(addition["text"])
+            origins.append(None)
+    return revised_units, origins
+
+def score_units_against_queries(unit_embeddings, query_embeddings):
+    """Score a document and its units against every query.
+
+    Units are weighted by similarity to the initial query (the first one) so
+    off-topic passages don't drag the document vector around. Returns
+    (overall_sims_per_query, unit_sims_matrix of units x queries).
+    """
+    initial_query_embedding = query_embeddings[0]
+    unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
+    weights = np.maximum(0, unit_sims_to_initial)
+
+    if np.sum(weights) > 1e-6:
+        weighted_overall_emb = np.average(unit_embeddings, axis=0, weights=weights).reshape(1, -1)
+    else:
+        weighted_overall_emb = np.mean(unit_embeddings, axis=0).reshape(1, -1)
+
+    overall_sims = cosine_similarity(weighted_overall_emb, query_embeddings)[0]
+    unit_q_sims = cosine_similarity(unit_embeddings, query_embeddings)
+    return overall_sims, unit_q_sims
+
+def overall_sims_with_single_change(base_embeddings, query_embeddings, new_vector, replace_idx=None):
+    """Document-level scores when exactly one unit is changed or inserted.
+
+    Used to attribute a document's score movement to one passage at a time.
+    Weighting matches score_units_against_queries, but the weighted sum is
+    updated incrementally so attributing every passage stays cheap.
+    """
+    initial_query = query_embeddings[0].reshape(1, -1)
+    base_weights = np.maximum(0, cosine_similarity(base_embeddings, initial_query).flatten())
+    new_weight = max(0.0, float(cosine_similarity(new_vector.reshape(1, -1), initial_query)[0][0]))
+
+    weighted_sum = base_weights @ base_embeddings
+    weight_total = base_weights.sum()
+    plain_sum = base_embeddings.sum(axis=0)
+    unit_count = len(base_embeddings)
+
+    if replace_idx is None:
+        weighted_sum = weighted_sum + new_weight * new_vector
+        weight_total = weight_total + new_weight
+        plain_sum = plain_sum + new_vector
+        unit_count += 1
+    else:
+        weighted_sum = weighted_sum - base_weights[replace_idx] * base_embeddings[replace_idx] + new_weight * new_vector
+        weight_total = weight_total - base_weights[replace_idx] + new_weight
+        plain_sum = plain_sum - base_embeddings[replace_idx] + new_vector
+
+    doc_vector = weighted_sum / weight_total if weight_total > 1e-6 else plain_sum / unit_count
+    return cosine_similarity(doc_vector.reshape(1, -1), query_embeddings)[0]
+
+def delta_colors():
+    """Validated diverging pair for gain/loss marks, stepped for the active theme."""
+    try:
+        is_dark = st.context.theme.type == "dark"
+    except Exception:
+        is_dark = False
+    return ("#3987e5", "#e66767") if is_dark else ("#256abf", "#e34948")
 
 def _embedding_cache_key(texts, model_name):
     """Generate a cache key from model name + text content."""
@@ -1349,10 +1455,10 @@ if st.session_state.processing:
             if analysis_granularity.startswith("Sentence"):
                 _, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
                 units_for_display = split_text_into_sentences(page_text_for_highlight) if page_text_for_highlight else []
-                units_for_embedding = units_for_display
+                units_for_embedding = build_embedding_units(units_for_display, analysis_granularity, s_overlap_val)
             else:
                 units_for_display, page_text_for_highlight = extract_structural_passages_with_full_text(raw_html_for_highlighting)
-                units_for_embedding = add_sentence_overlap_to_passages(units_for_display, s_overlap_val)
+                units_for_embedding = build_embedding_units(units_for_display, analysis_granularity, s_overlap_val)
                 if not units_for_display and page_text_for_highlight:
                     units_for_display = [page_text_for_highlight]
             t_extract = time.time() - t0
@@ -1362,13 +1468,6 @@ if st.session_state.processing:
                 continue
 
             st.write(f"_Extracted {len(units_for_embedding)} content units ({t_extract:.1f}s)_")
-
-            # Truncate long passages to ~500 words (embedding models cap at 512 tokens anyway)
-            max_words = 500
-            units_for_embedding = [
-                " ".join(u.split()[:max_words]) if len(u.split()) > max_words else u
-                for u in units_for_embedding
-            ]
 
             # Generate embeddings for content units
             t0 = time.time()
@@ -1386,6 +1485,8 @@ if st.session_state.processing:
             # Store processed data
             local_processed_units_data[identifier] = {
                 "units": units_for_display,
+                "units_for_embedding": units_for_embedding,
+                "overlap_used": s_overlap_val,
                 "embeddings": unit_embeddings,
                 "unit_similarities": None,
                 "page_text_for_highlight": page_text_for_highlight,
@@ -1394,21 +1495,7 @@ if st.session_state.processing:
 
             # Calculate similarities
             if unit_embeddings.size > 0:
-                # Calculate similarity to initial query for weighting
-                unit_sims_to_initial = cosine_similarity(unit_embeddings, initial_query_embedding.reshape(1, -1)).flatten()
-                weights = np.maximum(0, unit_sims_to_initial)
-
-                # Calculate weighted overall embedding
-                if np.sum(weights) > 1e-6:
-                    weighted_overall_emb = np.average(unit_embeddings, axis=0, weights=weights).reshape(1, -1)
-                else:
-                    weighted_overall_emb = np.mean(unit_embeddings, axis=0).reshape(1, -1)
-
-                # Calculate overall similarities to all queries
-                overall_sims = cosine_similarity(weighted_overall_emb, local_all_query_embs)[0]
-
-                # Calculate unit-level similarities to all queries
-                unit_q_sims = cosine_similarity(unit_embeddings, local_all_query_embs)
+                overall_sims, unit_q_sims = score_units_against_queries(unit_embeddings, local_all_query_embs)
                 local_processed_units_data[identifier]["unit_similarities"] = unit_q_sims
 
                 # Generate metrics for each query
@@ -1435,8 +1522,13 @@ if st.session_state.processing:
             st.session_state.all_url_metrics_list = local_all_metrics
             st.session_state.url_processed_units_dict = local_processed_units_data
             st.session_state.all_queries_for_analysis = local_all_queries
+            st.session_state.all_query_embeddings = local_all_query_embs
             st.session_state.analysis_done = True
             st.session_state.last_analysis_granularity = analysis_granularity
+            # A fresh analysis invalidates any pending revision
+            st.session_state.passage_edits = {}
+            st.session_state.passage_additions = {}
+            st.session_state.revision_results = {}
             st.success(f"Analysis complete! Processed {len(local_processed_units_data)} sources with {len(local_all_queries)} queries.")
             st.session_state.analysis_error = None
 
@@ -1757,6 +1849,428 @@ if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_li
                             st.markdown(f"> {u_t}")
                             st.divider()
 
+# --- Revise & Re-score Section ---
+if st.session_state.get("analysis_done") and st.session_state.url_processed_units_dict:
+    rev_unit_label = "Sentence" if st.session_state.last_analysis_granularity.startswith("Sentence") else "Passage"
+    st.markdown("---")
+    st.subheader(f"✏️ Revise {rev_unit_label}s & Re-score")
+
+    scored_sources = [
+        k for k, v in st.session_state.url_processed_units_dict.items()
+        if v.get("unit_similarities") is not None and v.get("units")
+    ]
+
+    if st.session_state.all_query_embeddings is None:
+        st.info("Run a new analysis to enable re-scoring — this feature needs query embeddings that earlier runs didn't store.")
+    elif not scored_sources:
+        st.info("No scored sources available to revise.")
+    else:
+        st.caption(
+            f"Edit any {rev_unit_label.lower()}s below and re-score. Only the {rev_unit_label.lower()}s whose text "
+            "actually changed get re-embedded, so a small edit costs a small number of API calls."
+        )
+
+        if len(scored_sources) == 1:
+            rev_source = scored_sources[0]
+            st.markdown(f"**Source:** `{rev_source}`")
+        else:
+            rev_source = st.selectbox("Source to revise:", options=scored_sources, key="rev_source_select")
+
+        p_data = st.session_state.url_processed_units_dict[rev_source]
+        base_units = p_data["units"]
+        queries = st.session_state.all_queries_for_analysis
+        edits = st.session_state.passage_edits.setdefault(rev_source, {})
+
+        def _unit_option_label(i):
+            text = base_units[i]
+            preview = text[:70] + ("…" if len(text) > 70 else "")
+            return f"{'✏️ ' if i in edits else ''}{rev_unit_label[0]}{i + 1}: {preview}"
+
+        selected_idxs = st.multiselect(
+            f"Choose {rev_unit_label.lower()}s to edit:",
+            options=list(range(len(base_units))),
+            format_func=_unit_option_label,
+            key=f"rev_pick_{rev_source}",
+            help="Pick one or several. Their current text is loaded into editable boxes below.",
+        )
+
+        for i in selected_idxs:
+            baseline_scores = p_data["unit_similarities"][i]
+            st.markdown(
+                f"**{rev_unit_label} {i + 1}** — current avg. score across queries: "
+                f"`{np.mean(baseline_scores):.3f}` · best: `{np.max(baseline_scores):.3f}`"
+            )
+            new_text = st.text_area(
+                f"{rev_unit_label} {i + 1} text",
+                value=edits.get(i, base_units[i]),
+                key=f"rev_txt_{rev_source}_{i}",
+                height=150,
+                label_visibility="collapsed",
+            )
+            if not new_text.strip():
+                st.warning(f"{rev_unit_label} {i + 1} can't be emptied — leave text in place or deselect it. Ignoring this edit.")
+                edits.pop(i, None)
+            elif new_text != base_units[i]:
+                edits[i] = new_text
+            else:
+                edits.pop(i, None)
+
+        additions = st.session_state.passage_additions.setdefault(rev_source, [])
+
+        with st.expander(f"➕ Add new {rev_unit_label.lower()}s", expanded=bool(additions)):
+            position_options = [-1] + list(range(len(base_units)))
+
+            def _position_label(idx):
+                if idx == -1:
+                    return "① At the very top of the document"
+                text = base_units[idx]
+                preview = text[:60] + ("…" if len(text) > 60 else "")
+                return f"After {rev_unit_label[0]}{idx + 1}: {preview}"
+
+            new_position = st.selectbox(
+                "Insert position:",
+                options=position_options,
+                format_func=_position_label,
+                index=len(position_options) - 1,
+                key=f"rev_add_pos_{rev_source}",
+            )
+            new_passage_text = st.text_area(
+                f"New {rev_unit_label.lower()} text",
+                key=f"rev_add_draft_{rev_source}",
+                height=150,
+                placeholder=f"Write a new {rev_unit_label.lower()} to add to the document…",
+            )
+            if st.button(f"➕ Add {rev_unit_label.lower()}", key=f"rev_add_btn_{rev_source}",
+                         disabled=not new_passage_text.strip()):
+                additions.append({
+                    "id": st.session_state.next_addition_id,
+                    "after_idx": new_position,
+                    "text": new_passage_text,
+                })
+                st.session_state.next_addition_id += 1
+                del st.session_state[f"rev_add_draft_{rev_source}"]
+                st.rerun()
+
+            if additions:
+                st.markdown(f"**Queued additions ({len(additions)})**")
+                for addition in list(additions):
+                    where = "top of document" if addition["after_idx"] == -1 else f"after {rev_unit_label[0]}{addition['after_idx'] + 1}"
+                    add_col, remove_col = st.columns([5, 1])
+                    with add_col:
+                        addition["text"] = st.text_area(
+                            f"New {rev_unit_label.lower()} — {where}",
+                            value=addition["text"],
+                            key=f"rev_addtxt_{rev_source}_{addition['id']}",
+                            height=110,
+                        )
+                    with remove_col:
+                        st.caption(" ")
+                        if st.button("🗑️", key=f"rev_addrm_{rev_source}_{addition['id']}", help="Remove this addition"):
+                            st.session_state.passage_additions[rev_source] = [
+                                a for a in additions if a["id"] != addition["id"]
+                            ]
+                            del st.session_state[f"rev_addtxt_{rev_source}_{addition['id']}"]
+                            st.rerun()
+
+        addition_count = len([a for a in additions if a["text"].strip()])
+        change_count = len(edits) + addition_count
+        change_summary = ", ".join(filter(None, [
+            f"{len(edits)} edit{'s' if len(edits) != 1 else ''}" if edits else "",
+            f"{addition_count} addition{'s' if addition_count != 1 else ''}" if addition_count else "",
+        ])) or "no changes"
+
+        act1, act2, act3 = st.columns([2, 2, 3])
+        with act1:
+            rescore_clicked = st.button(
+                f"🔄 Re-score ({change_summary})",
+                type="primary",
+                disabled=change_count == 0,
+                key="rescore_btn",
+            )
+        with act2:
+            if st.button("↩️ Discard changes", disabled=change_count == 0, key="discard_edits_btn"):
+                st.session_state.passage_edits[rev_source] = {}
+                st.session_state.passage_additions[rev_source] = []
+                st.session_state.revision_results.pop(rev_source, None)
+                for prefix in (f"rev_txt_{rev_source}_", f"rev_addtxt_{rev_source}_"):
+                    for widget_key in [k for k in list(st.session_state.keys()) if k.startswith(prefix)]:
+                        del st.session_state[widget_key]
+                st.rerun()
+
+        if rescore_clicked:
+            try:
+                with st.spinner("Re-scoring revised document..."):
+                    revised_units, origins = assemble_revised_units(base_units, edits, additions)
+
+                    granularity = st.session_state.last_analysis_granularity
+                    revised_embed_units = build_embedding_units(revised_units, granularity, p_data.get("overlap_used", 0))
+                    original_embed_units = p_data.get("units_for_embedding") or []
+                    base_embeddings = p_data["embeddings"]
+
+                    if len(revised_embed_units) != len(revised_units):
+                        raise RuntimeError("Unit alignment was lost while preparing the revision — please re-run the analysis.")
+
+                    # Reuse a vector whenever the prepared text is byte-identical to
+                    # something already embedded. This survives insertions, which shift
+                    # every later index, and it catches the neighbours whose overlap
+                    # context changed because of an edit.
+                    reusable = {}
+                    for text, vector in zip(original_embed_units, base_embeddings):
+                        reusable.setdefault(text, vector)
+
+                    needs_embedding = [i for i, text in enumerate(revised_embed_units) if text not in reusable]
+                    if not needs_embedding:
+                        raise RuntimeError("The revised text is identical to the original once prepared for embedding.")
+
+                    local_model_for_rescore = None
+                    if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
+                        local_model_for_rescore = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
+                        if local_model_for_rescore is None:
+                            raise RuntimeError("Local embedding model failed to load.")
+
+                    new_vectors = get_embeddings([revised_embed_units[i] for i in needs_embedding], local_model_for_rescore)
+                    if new_vectors.size == 0:
+                        raise RuntimeError(
+                            f"Re-embedding failed: {st.session_state.pop('embedding_error', 'no vectors returned')}"
+                        )
+
+                    fresh = dict(zip(needs_embedding, new_vectors))
+                    revised_embeddings = np.array([
+                        fresh[i] if i in fresh else reusable[text]
+                        for i, text in enumerate(revised_embed_units)
+                    ])
+
+                    query_embs = st.session_state.all_query_embeddings
+                    base_overall, base_unit_sims = score_units_against_queries(base_embeddings, query_embs)
+                    rev_overall, rev_unit_sims = score_units_against_queries(revised_embeddings, query_embs)
+
+                    st.session_state.revision_results[rev_source] = {
+                        "revised_units": revised_units,
+                        "revised_embed_units": revised_embed_units,
+                        "revised_embeddings": revised_embeddings,
+                        "origins": origins,
+                        "base_embeddings": base_embeddings,
+                        "edited_idxs": sorted(edits.keys()),
+                        "reembedded_idxs": needs_embedding,
+                        "added_count": addition_count,
+                        "base_overall": base_overall,
+                        "rev_overall": rev_overall,
+                        "base_unit_sims": base_unit_sims,
+                        "rev_unit_sims": rev_unit_sims,
+                    }
+                st.success(
+                    f"Re-scored: {change_summary}, {len(needs_embedding)} unit(s) embedded, "
+                    f"{len(revised_units) - len(needs_embedding)} reused."
+                )
+            except Exception as e:
+                st.error(f"Re-score failed: {e}")
+
+        revision = st.session_state.revision_results.get(rev_source)
+        if revision:
+            base_overall = revision["base_overall"]
+            rev_overall = revision["rev_overall"]
+            rev_unit_sims = revision["rev_unit_sims"]
+            query_embs_for_display = st.session_state.all_query_embeddings
+            deltas = rev_overall - base_overall
+            gain_color, loss_color = delta_colors()
+
+            st.markdown(f"#### Document-level change · `{rev_source}`")
+            direct_changes = len(revision["edited_idxs"]) + revision.get("added_count", 0)
+            if len(revision["reembedded_idxs"]) > direct_changes:
+                st.caption(
+                    f"{direct_changes} {rev_unit_label.lower()}(s) changed directly, but "
+                    f"{len(revision['reembedded_idxs'])} were re-embedded — passage overlap means a change also "
+                    "shifts the context its neighbours are embedded with."
+                )
+            if revision.get("added_count"):
+                st.caption(
+                    f"Document grew from {len(base_units)} to {len(revision['revised_units'])} "
+                    f"{rev_unit_label.lower()}s."
+                )
+
+            tile1, tile2, tile3, tile4 = st.columns(4)
+            tile1.metric("Overall Similarity", f"{rev_overall.mean():.3f}", f"{deltas.mean():+.3f}",
+                         help="Weighted document score, averaged across all queries")
+            tile2.metric("Queries improved", int((deltas > 0).sum()), help=f"of {len(queries)} queries")
+            tile3.metric("Queries declined", int((deltas < 0).sum()),
+                         delta=f"-{int((deltas < 0).sum())}" if (deltas < 0).any() else None,
+                         delta_color="inverse", help=f"of {len(queries)} queries")
+            best_i = int(np.argmax(deltas))
+            tile4.metric("Biggest gain", f"{deltas[best_i]:+.3f}",
+                         help=f"Query: {queries[best_i]}")
+
+            # Per-query before/after, including rank against the other sources
+            other_metrics = [m for m in st.session_state.all_url_metrics_list if m["URL"] != rev_source]
+            has_competition = bool(other_metrics)
+            comparison_rows = []
+            for qi, query in enumerate(queries):
+                row = {
+                    "Query": query,
+                    "Before": float(base_overall[qi]),
+                    "After": float(rev_overall[qi]),
+                    "Change": float(deltas[qi]),
+                }
+                if has_competition:
+                    rival_scores = [m["Overall Similarity (Weighted)"] for m in other_metrics if m["Query"] == query]
+                    row["Rank Before"] = 1 + sum(1 for s in rival_scores if s > base_overall[qi])
+                    row["Rank After"] = 1 + sum(1 for s in rival_scores if s > rev_overall[qi])
+                    row["Rank Change"] = row["Rank Before"] - row["Rank After"]
+                comparison_rows.append(row)
+
+            df_compare = pd.DataFrame(comparison_rows)
+            compare_config = {
+                "Before": st.column_config.NumberColumn("Before", format="%.3f"),
+                "After": st.column_config.NumberColumn("After", format="%.3f"),
+                "Change": st.column_config.NumberColumn("Change", format="%+.3f", help="After minus Before"),
+            }
+            if has_competition:
+                compare_config.update({
+                    "Rank Before": st.column_config.NumberColumn("Rank Before", format="%d"),
+                    "Rank After": st.column_config.NumberColumn("Rank After", format="%d"),
+                    "Rank Change": st.column_config.NumberColumn("Rank Change", format="%+d",
+                                                                 help="Positive = moved up against the competition"),
+                })
+            st.dataframe(df_compare, use_container_width=True, column_config=compare_config)
+
+            # Diverging bars: gains and losses as two series so the legend carries identity
+            improved = df_compare[df_compare["Change"] >= 0]
+            declined = df_compare[df_compare["Change"] < 0]
+            fig_delta = go.Figure()
+            for frame, name, color in ((improved, "Improved", gain_color), (declined, "Declined", loss_color)):
+                if not frame.empty:
+                    fig_delta.add_trace(go.Bar(
+                        x=frame["Change"], y=frame["Query"], orientation="h", name=name,
+                        marker=dict(color=color, line=dict(width=0)),
+                        text=[f"{v:+.3f}" for v in frame["Change"]],
+                        textposition="outside", cliponaxis=False,
+                        hovertemplate="<b>%{y}</b><br>Change: %{x:+.4f}<extra></extra>",
+                    ))
+            fig_delta.update_layout(
+                title="Score change by query (after minus before)",
+                height=max(320, 34 * len(queries) + 140),
+                xaxis_title="Change in weighted similarity", yaxis_title=None,
+                yaxis=dict(autorange="reversed"), bargap=0.35,
+                margin=dict(l=10, r=60, t=60, b=40),
+            )
+            fig_delta.add_vline(x=0, line_width=1, line_color="rgba(128,128,128,0.55)")
+            st.plotly_chart(fig_delta, use_container_width=True)
+
+            # Per-unit detail for everything that got re-embedded
+            st.markdown(f"#### {rev_unit_label}-level impact on Overall Similarity")
+            st.caption(
+                "Each row re-scores the document with **only that change** applied, so the impact is "
+                "attributable to a single {unit}. Impacts don't sum to the document total — passages "
+                "are weighted and interact.".format(unit=rev_unit_label.lower())
+            )
+            origins = revision["origins"]
+            revision_base_embeddings = revision["base_embeddings"]
+            revised_embeddings = revision["revised_embeddings"]
+            edited_set = set(revision["edited_idxs"])
+            base_overall_mean = float(base_overall.mean())
+
+            unit_rows = []
+            for i in revision["reembedded_idxs"]:
+                origin = origins[i]
+                if origin is None:
+                    kind = "➕ new"
+                elif origin in edited_set:
+                    kind = "✏️ edited"
+                else:
+                    kind = "context only"
+
+                isolated_overall = overall_sims_with_single_change(
+                    revision_base_embeddings, query_embs_for_display, revised_embeddings[i],
+                    replace_idx=origin,
+                )
+                isolated_impact = isolated_overall - base_overall
+                best_q = int(np.argmax(isolated_impact))
+                unit_rows.append({
+                    rev_unit_label: f"{rev_unit_label[0]}{i + 1}" if origin is None else f"{rev_unit_label[0]}{origin + 1}",
+                    "Change": kind,
+                    "Overall Before": base_overall_mean,
+                    "Overall After": float(isolated_overall.mean()),
+                    "Impact": float(isolated_impact.mean()),
+                    "Best Query Impact": float(isolated_impact[best_q]),
+                    "On Query": queries[best_q],
+                })
+
+            df_units = pd.DataFrame(unit_rows).sort_values("Impact", ascending=False).reset_index(drop=True)
+            st.dataframe(
+                df_units, use_container_width=True,
+                column_config={
+                    "Overall Before": st.column_config.NumberColumn(
+                        "Overall Before", format="%.3f",
+                        help="Baseline document Overall Similarity, averaged across queries"),
+                    "Overall After": st.column_config.NumberColumn(
+                        "Overall After", format="%.3f",
+                        help="Document Overall Similarity with only this change applied"),
+                    "Impact": st.column_config.NumberColumn(
+                        "Impact", format="%+.4f",
+                        help="This change's isolated effect on Overall Similarity"),
+                    "Best Query Impact": st.column_config.NumberColumn(
+                        "Best Query Impact", format="%+.4f",
+                        help="The single query this change helped most"),
+                },
+            )
+
+            with st.expander(f"Compare changed {rev_unit_label.lower()} text side by side", expanded=False):
+                for i in revision["edited_idxs"]:
+                    st.markdown(f"**{rev_unit_label} {i + 1}** — edited")
+                    before_col, after_col = st.columns(2)
+                    before_col.caption("Before")
+                    before_col.write(base_units[i])
+                    after_col.caption("After")
+                    after_col.write(revision["revised_units"][origins.index(i)])
+                    st.markdown("---")
+                for i, origin in enumerate(origins):
+                    if origin is None:
+                        preceding = next((origins[j] for j in range(i - 1, -1, -1) if origins[j] is not None), None)
+                        where = "top of document" if preceding is None else f"after {rev_unit_label[0]}{preceding + 1}"
+                        st.markdown(f"**New {rev_unit_label.lower()}** — inserted {where}")
+                        st.write(revision["revised_units"][i])
+                        st.markdown("---")
+
+            finish1, finish2 = st.columns([2, 3])
+            with finish1:
+                if st.button("✅ Make revision the new baseline", key="promote_revision_btn",
+                             help="Replaces the stored document so further edits build on this version"):
+                    revised_units = revision["revised_units"]
+                    p_data["units"] = revised_units
+                    p_data["units_for_embedding"] = revision["revised_embed_units"]
+                    p_data["embeddings"] = revision["revised_embeddings"]
+                    p_data["unit_similarities"] = rev_unit_sims
+                    p_data["page_text_for_highlight"] = " ".join(revised_units)
+                    p_data["raw_html"] = "".join(f"<p>{u}</p>" for u in revised_units)
+
+                    for qi, query in enumerate(queries):
+                        column = rev_unit_sims[:, qi]
+                        for metric in st.session_state.all_url_metrics_list:
+                            if metric["URL"] == rev_source and metric["Query"] == query:
+                                metric["Overall Similarity (Weighted)"] = float(rev_overall[qi])
+                                metric["Max Unit Sim."] = float(np.max(column)) if column.size else 0.0
+                                metric["Avg. Unit Sim."] = float(np.mean(column)) if column.size else 0.0
+                                metric["Num Units"] = len(revised_units)
+                                metric["Max Similarity Passage"] = revised_units[int(np.argmax(column))] if column.size else ""
+
+                    st.session_state.passage_edits[rev_source] = {}
+                    st.session_state.passage_additions[rev_source] = []
+                    st.session_state.revision_results.pop(rev_source, None)
+                    # Recommendations were written against the old text
+                    if isinstance(st.session_state.get("seo_recommendations"), dict):
+                        st.session_state.seo_recommendations.pop(rev_source, None)
+                    for prefix in (f"rev_txt_{rev_source}_", f"rev_addtxt_{rev_source}_", f"rev_pick_{rev_source}"):
+                        for widget_key in [k for k in list(st.session_state.keys()) if k.startswith(prefix)]:
+                            del st.session_state[widget_key]
+                    st.rerun()
+            with finish2:
+                st.download_button(
+                    "⬇️ Download revised text",
+                    data="\n\n".join(revision["revised_units"]),
+                    file_name="revised_content.txt",
+                    mime="text/plain",
+                    key="download_revised_btn",
+                )
+
 # --- SEO Recommendations Section ---
 if st.session_state.get("analysis_done") and st.session_state.all_url_metrics_list:
     st.markdown("---")
@@ -2001,8 +2515,15 @@ if st.session_state.get("analysis_done") or st.session_state.get("prompt_ranking
         st.session_state.all_url_metrics_list = None
         st.session_state.url_processed_units_dict = None
         st.session_state.all_queries_for_analysis = None
+        st.session_state.all_query_embeddings = None
         st.session_state.analysis_done = False
         st.session_state.seo_recommendations = {}
+        # Reset revision state
+        st.session_state.passage_edits = {}
+        st.session_state.passage_additions = {}
+        st.session_state.revision_results = {}
+        for widget_key in [k for k in list(st.session_state.keys()) if k.startswith("rev_")]:
+            del st.session_state[widget_key]
         # Reset prompt ranking state
         st.session_state.prompt_ranking_results = None
         st.session_state.prompt_ranking_done = False
