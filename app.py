@@ -236,30 +236,46 @@ def load_local_sentence_transformer_model(model_name):
             st.warning("This model may be gated. Please ensure your Hugging Face API key has access to this model.")
         return None
 
+# Both embedding APIs cap the number of inputs accepted in a single request
+# (Gemini rejects more than 100). Long documents easily exceed this, so send
+# the units in batches and stitch the vectors back together in input order.
+EMBED_BATCH_SIZE = 100
+
+def _record_embedding_error(message):
+    """Surface an embedding failure and keep it alive across the st.rerun()."""
+    st.session_state.embedding_error = message
+    st.error(message)
+
 def get_openai_embeddings(texts: list, client: OpenAI, model: str):
-    if not texts or not client: 
+    if not texts or not client:
         return np.array([])
+    texts = [text.replace("\n", " ") for text in texts]
+    vectors = []
     try:
-        texts = [text.replace("\n", " ") for text in texts]
-        response = client.embeddings.create(input=texts, model=model)
-        return np.array([item.embedding for item in response.data])
-    except Exception as e: 
-        st.error(f"OpenAI embedding failed: {e}")
+        for start in range(0, len(texts), EMBED_BATCH_SIZE):
+            response = client.embeddings.create(input=texts[start:start + EMBED_BATCH_SIZE], model=model)
+            vectors.extend(item.embedding for item in response.data)
+    except Exception as e:
+        _record_embedding_error(f"OpenAI embedding failed: {e}")
         return np.array([])
+    return np.array(vectors)
 
 def get_gemini_embeddings(texts: list, model: str):
     if not texts or not st.session_state.get("gemini_client"):
         return np.array([])
+    client = st.session_state.gemini_client
+    vectors = []
     try:
-        client = st.session_state.gemini_client
-        result = client.models.embed_content(
-            model=model, contents=texts,
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
-        )
-        return np.array([e.values for e in result.embeddings])
+        for start in range(0, len(texts), EMBED_BATCH_SIZE):
+            result = client.models.embed_content(
+                model=model, contents=texts[start:start + EMBED_BATCH_SIZE],
+                config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
+            )
+            vectors.extend(e.values for e in result.embeddings)
     except Exception as e:
-        st.error(f"Gemini embedding failed: {e}")
+        _record_embedding_error(f"Gemini embedding failed: {e}")
         return np.array([])
+    return np.array(vectors)
 
 def _embedding_cache_key(texts, model_name):
     """Generate a cache key from model name + text content."""
@@ -1282,8 +1298,10 @@ if st.session_state.processing:
         st.write(f"_Query embeddings ({t_q_emb:.1f}s)_")
 
         if local_all_query_embs.size == 0:
-            st.error("Query embedding failed. Please check your API configuration.")
-            st.stop()
+            raise RuntimeError(
+                "Query embedding failed: "
+                f"{st.session_state.pop('embedding_error', 'check your API configuration')}"
+            )
 
         initial_query_embedding = local_all_query_embs[0]
 
@@ -1356,6 +1374,11 @@ if st.session_state.processing:
             t0 = time.time()
             with st.spinner(f"Embedding {len(units_for_embedding)} content units..."):
                 unit_embeddings = get_embeddings(units_for_embedding, local_embedding_model_instance)
+            if unit_embeddings.size == 0:
+                raise RuntimeError(
+                    f"Embedding failed for '{identifier}' ({len(units_for_embedding)} units): "
+                    f"{st.session_state.pop('embedding_error', 'no vectors returned')}"
+                )
             t_emb = time.time() - t0
             cached_label = " [cached]" if t_emb < 0.1 else ""
             st.write(f"_Content embeddings ({t_emb:.1f}s){cached_label}_")
