@@ -516,10 +516,23 @@ def _chunk_gallery_items(passages, target_size=400):
         chunked.append(" | ".join(current_chunk))
     return chunked
 
+def _unwrap_page_wrapper_forms(soup):
+    """ASP.NET WebForms (and similar) wrap the entire page body in one <form>.
+    Unwrap those so their contents survive the chrome-removal pass. Small forms
+    (search boxes, newsletter signups) are left alone so they still get dropped."""
+    container = soup.body or soup
+    body_len = len(container.get_text(strip=True))
+    if not body_len:
+        return
+    for form in soup.find_all('form'):
+        if len(form.get_text(strip=True)) / body_len > 0.5:
+            form.unwrap()
+
 def extract_structural_passages_with_full_text(html_content):
     if not html_content:
         return [], ""
     soup = BeautifulSoup(html_content, 'html.parser')
+    _unwrap_page_wrapper_forms(soup)
     
     # Extract image alt text before removing images (valuable for galleries)
     image_alt_texts = []
@@ -533,19 +546,6 @@ def extract_structural_passages_with_full_text(html_content):
         if el.name:
             el.decompose()
     
-    # Remove elements by selectors
-    selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
-    for sel in selectors:
-        try:
-            for element in soup.select(sel):
-                if not any(p.name in ['main', 'article', 'body'] for p in element.parents): 
-                    element.decompose()
-        except Exception: 
-            pass
-    
-    # --- FAQ / Accordion detection: keep Q+A pairs together as single passages ---
-    faq_handled_ids = set()
-    faq_passages = []
     faq_item_selectors = [
         ".panel.panel-default",                              # Bootstrap accordion items
         "[class*='faq-item']", "[class*='faq_item']", "[class*='faqitem']",
@@ -553,6 +553,35 @@ def extract_structural_passages_with_full_text(html_content):
         "details",                                           # HTML5 disclosure elements
         "[itemtype*='Question']",                            # Schema.org FAQ markup
     ]
+
+    # Protect FAQ/accordion subtrees from the chrome-removal pass below: their
+    # toggles are commonly classed "accordion-header", which holds the question.
+    faq_protected_ids = set()
+    for sel in faq_item_selectors:
+        try:
+            for element in soup.select(sel):
+                faq_protected_ids.add(id(element))
+                for desc in element.find_all(True):
+                    faq_protected_ids.add(id(desc))
+        except Exception:
+            pass
+
+    # Remove elements by selectors. Anything inside <main>/<article> is treated as
+    # real content and left alone.
+    selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
+    for sel in selectors:
+        try:
+            for element in soup.select(sel):
+                if id(element) in faq_protected_ids:
+                    continue
+                if not any(p.name in ['main', 'article'] for p in element.parents):
+                    element.decompose()
+        except Exception:
+            pass
+
+    # --- FAQ / Accordion detection: keep Q+A pairs together as single passages ---
+    faq_handled_ids = set()
+    faq_passages = []
     for sel in faq_item_selectors:
         try:
             for element in soup.select(sel):
@@ -724,6 +753,7 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
         return "<p>Could not generate highlighted HTML.</p>"
     
     soup = BeautifulSoup(html_content, 'html.parser')
+    _unwrap_page_wrapper_forms(soup)
 
     # Extract image alt text before removing images
     image_alt_parts = []
