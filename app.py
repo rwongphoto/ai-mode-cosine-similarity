@@ -59,6 +59,7 @@ if "embedding_cache" not in st.session_state: st.session_state.embedding_cache =
 if "all_query_embeddings" not in st.session_state: st.session_state.all_query_embeddings = None
 if "passage_edits" not in st.session_state: st.session_state.passage_edits = {}
 if "passage_additions" not in st.session_state: st.session_state.passage_additions = {}
+if "passage_removals" not in st.session_state: st.session_state.passage_removals = {}
 if "revision_results" not in st.session_state: st.session_state.revision_results = {}
 if "next_addition_id" not in st.session_state: st.session_state.next_addition_id = 0
 
@@ -302,12 +303,13 @@ def build_embedding_units(display_units, granularity, overlap_count):
         for u in embedding_units
     ]
 
-def assemble_revised_units(base_units, edits, additions):
-    """Apply edits and insertions to the baseline units.
+def assemble_revised_units(base_units, edits, additions, removals=()):
+    """Apply edits, insertions and removals to the baseline units.
 
     Returns (revised_units, origins) where origins[i] is the baseline index the
     unit came from, or None for a newly added unit. Insertions are keyed by the
     baseline index they follow; -1 places a unit at the top of the document.
+    Insertions after a removed unit still land in that spot.
     """
     pending = {}
     for addition in additions:
@@ -319,8 +321,9 @@ def assemble_revised_units(base_units, edits, additions):
         revised_units.append(addition["text"])
         origins.append(None)
     for i, unit in enumerate(base_units):
-        revised_units.append(edits.get(i, unit))
-        origins.append(i)
+        if i not in removals:
+            revised_units.append(edits.get(i, unit))
+            origins.append(i)
         for addition in pending.get(i, []):
             revised_units.append(addition["text"])
             origins.append(None)
@@ -1558,6 +1561,7 @@ if st.session_state.processing:
             # A fresh analysis invalidates any pending revision
             st.session_state.passage_edits = {}
             st.session_state.passage_additions = {}
+            st.session_state.passage_removals = {}
             st.session_state.revision_results = {}
             st.success(f"Analysis complete! Processed {len(local_processed_units_data)} sources with {len(local_all_queries)} queries.")
             st.session_state.analysis_error = None
@@ -1896,8 +1900,8 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
         st.info("No scored sources available to revise.")
     else:
         st.caption(
-            f"Edit any {rev_unit_label.lower()}s below and re-score. Only the {rev_unit_label.lower()}s whose text "
-            "actually changed get re-embedded, so a small edit costs a small number of API calls."
+            f"Edit, remove or add {rev_unit_label.lower()}s below and re-score. Only the {rev_unit_label.lower()}s whose "
+            "text actually changed get re-embedded, so a small edit costs a small number of API calls."
         )
 
         if len(scored_sources) == 1:
@@ -1910,11 +1914,15 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
         base_units = p_data["units"]
         queries = st.session_state.all_queries_for_analysis
         edits = st.session_state.passage_edits.setdefault(rev_source, {})
+        removals = st.session_state.passage_removals.setdefault(rev_source, set())
+        # Drop indices left over from a document that has since changed length
+        removals.intersection_update(range(len(base_units)))
 
         def _unit_option_label(i):
             text = base_units[i]
             preview = text[:70] + ("…" if len(text) > 70 else "")
-            return f"{'✏️ ' if i in edits else ''}{rev_unit_label[0]}{i + 1}: {preview}"
+            marker = "🗑️ " if i in removals else ("✏️ " if i in edits else "")
+            return f"{marker}{rev_unit_label[0]}{i + 1}: {preview}"
 
         selected_idxs = st.multiselect(
             f"Choose {rev_unit_label.lower()}s to edit:",
@@ -1925,6 +1933,9 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
         )
 
         for i in selected_idxs:
+            if i in removals:
+                st.caption(f"{rev_unit_label} {i + 1} is marked for removal — unmark it below to edit it instead.")
+                continue
             baseline_scores = p_data["unit_similarities"][i]
             st.markdown(
                 f"**{rev_unit_label} {i + 1}** — current avg. score across queries: "
@@ -1944,6 +1955,25 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
                 edits[i] = new_text
             else:
                 edits.pop(i, None)
+
+        def _sync_removals(source=rev_source):
+            st.session_state.passage_removals[source] = set(st.session_state[f"rev_rm_pick_{source}"])
+
+        # Stored removals are the source of truth; the widget mirrors them so they
+        # survive switching sources and get cleared by Discard / new baseline.
+        st.session_state[f"rev_rm_pick_{rev_source}"] = sorted(removals)
+        st.multiselect(
+            f"🗑️ Choose {rev_unit_label.lower()}s to remove:",
+            options=list(range(len(base_units))),
+            format_func=_unit_option_label,
+            key=f"rev_rm_pick_{rev_source}",
+            on_change=_sync_removals,
+            help=f"Removed {rev_unit_label.lower()}s are dropped from the document when re-scoring. "
+                 "Removal overrides any edit to the same one.",
+        )
+        if len(removals) >= len(base_units):
+            st.warning(f"Every {rev_unit_label.lower()} is marked for removal — keep at least one, "
+                       f"or add a new {rev_unit_label.lower()}, to re-score.")
 
         additions = st.session_state.passage_additions.setdefault(rev_source, [])
 
@@ -2002,11 +2032,15 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
                             del st.session_state[f"rev_addtxt_{rev_source}_{addition['id']}"]
                             st.rerun()
 
+        # A removed unit's edit no longer applies
+        active_edits = {i: t for i, t in edits.items() if i not in removals}
         addition_count = len([a for a in additions if a["text"].strip()])
-        change_count = len(edits) + addition_count
+        change_count = len(active_edits) + addition_count + len(removals)
+        leaves_empty_document = len(removals) >= len(base_units) and addition_count == 0
         change_summary = ", ".join(filter(None, [
-            f"{len(edits)} edit{'s' if len(edits) != 1 else ''}" if edits else "",
+            f"{len(active_edits)} edit{'s' if len(active_edits) != 1 else ''}" if active_edits else "",
             f"{addition_count} addition{'s' if addition_count != 1 else ''}" if addition_count else "",
+            f"{len(removals)} removal{'s' if len(removals) != 1 else ''}" if removals else "",
         ])) or "no changes"
 
         act1, act2, act3 = st.columns([2, 2, 3])
@@ -2014,13 +2048,14 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
             rescore_clicked = st.button(
                 f"🔄 Re-score ({change_summary})",
                 type="primary",
-                disabled=change_count == 0,
+                disabled=change_count == 0 or leaves_empty_document,
                 key="rescore_btn",
             )
         with act2:
             if st.button("↩️ Discard changes", disabled=change_count == 0, key="discard_edits_btn"):
                 st.session_state.passage_edits[rev_source] = {}
                 st.session_state.passage_additions[rev_source] = []
+                st.session_state.passage_removals[rev_source] = set()
                 st.session_state.revision_results.pop(rev_source, None)
                 for prefix in (f"rev_txt_{rev_source}_", f"rev_addtxt_{rev_source}_"):
                     for widget_key in [k for k in list(st.session_state.keys()) if k.startswith(prefix)]:
@@ -2030,7 +2065,7 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
         if rescore_clicked:
             try:
                 with st.spinner("Re-scoring revised document..."):
-                    revised_units, origins = assemble_revised_units(base_units, edits, additions)
+                    revised_units, origins = assemble_revised_units(base_units, active_edits, additions, removals)
 
                     granularity = st.session_state.last_analysis_granularity
                     revised_embed_units = build_embedding_units(revised_units, granularity, p_data.get("overlap_used", 0))
@@ -2049,22 +2084,24 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
                         reusable.setdefault(text, vector)
 
                     needs_embedding = [i for i, text in enumerate(revised_embed_units) if text not in reusable]
-                    if not needs_embedding:
+                    # Pure removals in sentence mode need no new vectors at all
+                    if not needs_embedding and not removals:
                         raise RuntimeError("The revised text is identical to the original once prepared for embedding.")
 
-                    local_model_for_rescore = None
-                    if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
-                        local_model_for_rescore = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
-                        if local_model_for_rescore is None:
-                            raise RuntimeError("Local embedding model failed to load.")
+                    fresh = {}
+                    if needs_embedding:
+                        local_model_for_rescore = None
+                        if not st.session_state.selected_embedding_model.startswith(("openai-", "gemini-")):
+                            local_model_for_rescore = load_local_sentence_transformer_model(st.session_state.selected_embedding_model)
+                            if local_model_for_rescore is None:
+                                raise RuntimeError("Local embedding model failed to load.")
 
-                    new_vectors = get_embeddings([revised_embed_units[i] for i in needs_embedding], local_model_for_rescore)
-                    if new_vectors.size == 0:
-                        raise RuntimeError(
-                            f"Re-embedding failed: {st.session_state.pop('embedding_error', 'no vectors returned')}"
-                        )
-
-                    fresh = dict(zip(needs_embedding, new_vectors))
+                        new_vectors = get_embeddings([revised_embed_units[i] for i in needs_embedding], local_model_for_rescore)
+                        if new_vectors.size == 0:
+                            raise RuntimeError(
+                                f"Re-embedding failed: {st.session_state.pop('embedding_error', 'no vectors returned')}"
+                            )
+                        fresh = dict(zip(needs_embedding, new_vectors))
                     revised_embeddings = np.array([
                         fresh[i] if i in fresh else reusable[text]
                         for i, text in enumerate(revised_embed_units)
@@ -2080,7 +2117,8 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
                         "revised_embeddings": revised_embeddings,
                         "origins": origins,
                         "base_embeddings": base_embeddings,
-                        "edited_idxs": sorted(edits.keys()),
+                        "edited_idxs": sorted(active_edits.keys()),
+                        "removed_idxs": sorted(removals),
                         "reembedded_idxs": needs_embedding,
                         "added_count": addition_count,
                         "base_overall": base_overall,
@@ -2105,17 +2143,18 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
             gain_color, loss_color = delta_colors()
 
             st.markdown(f"#### Document-level change · `{rev_source}`")
+            removed_idxs = revision.get("removed_idxs", [])
             direct_changes = len(revision["edited_idxs"]) + revision.get("added_count", 0)
             if len(revision["reembedded_idxs"]) > direct_changes:
                 st.caption(
                     f"{direct_changes} {rev_unit_label.lower()}(s) changed directly, but "
-                    f"{len(revision['reembedded_idxs'])} were re-embedded — passage overlap means a change also "
-                    "shifts the context its neighbours are embedded with."
+                    f"{len(revision['reembedded_idxs'])} were re-embedded — passage overlap means a change or removal "
+                    "also shifts the context its neighbours are embedded with."
                 )
-            if revision.get("added_count"):
+            if len(revision["revised_units"]) != len(base_units):
                 st.caption(
-                    f"Document grew from {len(base_units)} to {len(revision['revised_units'])} "
-                    f"{rev_unit_label.lower()}s."
+                    f"Document {'grew' if len(revision['revised_units']) > len(base_units) else 'shrank'} from "
+                    f"{len(base_units)} to {len(revision['revised_units'])} {rev_unit_label.lower()}s."
                 )
 
             tile1, tile2, tile3, tile4 = st.columns(4)
@@ -2224,7 +2263,27 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
                     "On Query": queries[best_q],
                 })
 
-            df_units = pd.DataFrame(unit_rows).sort_values("Impact", ascending=False).reset_index(drop=True)
+            # A removal's isolated impact: the baseline with only that unit taken out
+            if len(revision_base_embeddings) > 1:
+                for origin in removed_idxs:
+                    isolated_overall, _ = score_units_against_queries(
+                        np.delete(revision_base_embeddings, origin, axis=0), query_embs_for_display,
+                    )
+                    isolated_impact = isolated_overall - base_overall
+                    best_q = int(np.argmax(isolated_impact))
+                    unit_rows.append({
+                        rev_unit_label: f"{rev_unit_label[0]}{origin + 1}",
+                        "Change": "🗑️ removed",
+                        "Overall Before": base_overall_mean,
+                        "Overall After": float(isolated_overall.mean()),
+                        "Impact": float(isolated_impact.mean()),
+                        "Best Query Impact": float(isolated_impact[best_q]),
+                        "On Query": queries[best_q],
+                    })
+
+            df_units = pd.DataFrame(unit_rows)
+            if not df_units.empty:
+                df_units = df_units.sort_values("Impact", ascending=False).reset_index(drop=True)
             st.dataframe(
                 df_units, use_container_width=True,
                 column_config={
@@ -2251,6 +2310,10 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
                     before_col.write(base_units[i])
                     after_col.caption("After")
                     after_col.write(revision["revised_units"][origins.index(i)])
+                    st.markdown("---")
+                for i in removed_idxs:
+                    st.markdown(f"**{rev_unit_label} {i + 1}** — removed")
+                    st.write(base_units[i])
                     st.markdown("---")
                 for i, origin in enumerate(origins):
                     if origin is None:
@@ -2284,6 +2347,7 @@ if st.session_state.get("analysis_done") and st.session_state.url_processed_unit
 
                     st.session_state.passage_edits[rev_source] = {}
                     st.session_state.passage_additions[rev_source] = []
+                    st.session_state.passage_removals[rev_source] = set()
                     st.session_state.revision_results.pop(rev_source, None)
                     # Recommendations were written against the old text
                     if isinstance(st.session_state.get("seo_recommendations"), dict):
@@ -2551,6 +2615,7 @@ if st.session_state.get("analysis_done") or st.session_state.get("prompt_ranking
         # Reset revision state
         st.session_state.passage_edits = {}
         st.session_state.passage_additions = {}
+        st.session_state.passage_removals = {}
         st.session_state.revision_results = {}
         for widget_key in [k for k in list(st.session_state.keys()) if k.startswith("rev_")]:
             del st.session_state[widget_key]
