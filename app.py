@@ -534,7 +534,7 @@ def _unwrap_page_wrapper_forms(soup):
 def extract_structural_passages_with_full_text(html_content):
     if not html_content:
         return [], ""
-    soup = BeautifulSoup(html_content, 'html.parser')
+    soup = BeautifulSoup(html_content, 'lxml')
     _unwrap_page_wrapper_forms(soup)
     
     # Extract image alt text before removing images (valuable for galleries)
@@ -570,12 +570,17 @@ def extract_structural_passages_with_full_text(html_content):
             pass
 
     # Remove elements by selectors. Anything inside <main>/<article> is treated as
-    # real content and left alone.
+    # real content and left alone, as is anything holding >50% of the page text:
+    # that's a page wrapper, not chrome (e.g. overlays set aria-hidden="true" on
+    # the whole body container while open).
+    body_len = len((soup.body or soup).get_text(strip=True)) or 1
     selectors = ["[class*='menu']", "[id*='nav']", "[class*='header']", "[id*='footer']", "[class*='sidebar']", "[class*='cookie']", "[class*='consent']", "[class*='popup']", "[class*='modal']", "[class*='social']", "[class*='share']", "[class*='advert']", "[id*='ad']", "[aria-hidden='true']"]
     for sel in selectors:
         try:
             for element in soup.select(sel):
                 if id(element) in faq_protected_ids:
+                    continue
+                if len(element.get_text(strip=True)) / body_len > 0.5:
                     continue
                 if not any(p.name in ['main', 'article'] for p in element.parents):
                     element.decompose()
@@ -755,7 +760,7 @@ def render_safe_highlighted_html(html_content, unit_scores_map):
     if not html_content or not unit_scores_map: 
         return "<p>Could not generate highlighted HTML.</p>"
     
-    soup = BeautifulSoup(html_content, 'html.parser')
+    soup = BeautifulSoup(html_content, 'lxml')
     _unwrap_page_wrapper_forms(soup)
 
     # Extract image alt text before removing images
